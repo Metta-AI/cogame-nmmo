@@ -99,6 +99,10 @@ docker_smoke).
 
 ## Phase N5: Packaging, docs, publish
 
+Carry-over doc debt flagged by earlier phases: tools/ci/docker_smoke.sh:95 comment ("scores are
+raw values") and the manifest results_schema scores description are stale post-mean-per-life —
+reword both during the N5 doc pass.
+
 - Dockerfile/compose/manifest (name `nmmo`, default variant 8 seats, cert fixture 8 baseline
   players seed 42 max_ticks ~1500 — calibrate so cert runs in minutes), README/PROTOCOL/AGENTS
   rewritten for nmmo, CI adapted (same emsdk pin), upload workflow (name key `nmmo`), version
