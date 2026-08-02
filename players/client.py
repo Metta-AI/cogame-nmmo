@@ -1,20 +1,25 @@
 """Reusable async player harness for cogame-nmmo websocket seats.
 
-Speaks the server's lockstep wire protocol (see ``cogame_nmmo.server``),
-one JSON text message per tick each way:
+Speaks the server's lockstep wire protocol v2 (see docs/PROTOCOL.md and
+``cogame_nmmo.server``), one JSON text message per tick each way:
 
-    server -> player  {"tick": t, "obs": ["<base64 510B>", ... per hero]}
-    player -> server  {"tick": t, "actions": [[6 ints], ... per hero]}
+    server -> player  {"tick": t, "obs": ["<base64 1707B>", ... per hero],
+                       "resets": [bool, ... per hero]}
+    player -> server  {"tick": t, "actions": [[1 int], ... per hero]}
     server -> player  {"done": true, "result": {...}}    (episode end)
 
 The websocket URL comes from an explicit argument or, failing that, the
 ``COWORLD_PLAYER_WS_URL`` / ``COGAMES_ENGINE_WS_URL`` environment
 variables (both appear in the Coworld cookbook's docker examples).
 
-A policy is a callable ``policy(tick, obs_rows) -> actions`` where
-``obs_rows`` is a list of raw 510-byte observation blobs (one per hero
-this seat controls) and the return value is a matching-length nested
-sequence of 6 ints per hero.
+A policy is a callable ``policy(tick, obs_rows, resets) -> actions``
+where ``obs_rows`` is a list of raw 1707-byte observation blobs (one per
+hero this seat controls), ``resets`` a parallel list of bools (protocol
+v2: ``resets[j]`` true means hero j's life ended on the previous sim
+step and the paired obs is the first of its new life — a recurrent
+policy must zero that hero's state BEFORE consuming the obs; stateless
+policies may ignore it), and the return value is a matching-length
+nested sequence of one action int per hero.
 
 Reconnects: the server allows a dead seat to reconnect, so transient
 connection drops are retried with a bounded number of consecutive
@@ -62,7 +67,7 @@ _FATAL_HTTP_STATUSES = {
     403: "connection rejected (403): bad slot or token",
 }
 
-Policy = Callable[[int, list], Sequence[Sequence[int]]]
+Policy = Callable[[int, list, list], Sequence[Sequence[int]]]
 
 
 class PlayerError(Exception):
@@ -193,7 +198,17 @@ async def _play_connection(
                 raise PlayerError(
                     f"malformed obs message at tick {data['tick']!r}: "
                     f"{exc}") from exc
-            actions = policy(data["tick"], obs_rows)
+            # Protocol v2: every tick message carries per-hero resets.
+            # A missing/mis-shaped field is a protocol violation and must
+            # fail loudly — silently defaulting to all-False would corrupt
+            # a recurrent policy's state across respawns.
+            resets = data.get("resets")
+            if (not isinstance(resets, list) or len(resets) != len(obs_rows)
+                    or not all(isinstance(r, bool) for r in resets)):
+                raise PlayerError(
+                    f"malformed resets field at tick {data['tick']!r}: "
+                    f"expected {len(obs_rows)} bools, got {resets!r}")
+            actions = policy(data["tick"], obs_rows, resets)
             if len(actions) != len(obs_rows):
                 # fail fast locally: a row-count bug would otherwise show
                 # up only as silent server-side strikes/NOOPs

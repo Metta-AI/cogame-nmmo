@@ -1,16 +1,8 @@
-# Inherited cogame-moba suite: exercises the moba-shaped modules this fork
-# has not adapted yet. Skipped (not deleted) pending Phase N3 (players),
-# which replaces it — see docs/plans/2026-08-02-cogame-nmmo-implementation.md.
-import pytest
-
-pytest.skip("moba-specific suite pending Phase N3 (players) rewrite",
-            allow_module_level=True)
-
-"""Tests for the player client library and random player (Task 3.1).
+"""Tests for the player client library and random player (Phase N3).
 
 Real episodes against the in-process GameServer (fixtures reused from
-tests.test_server) plus targeted reconnect/fatal-error tests against a
-minimal protocol-speaking fake server.
+tests.test_server) plus targeted reconnect/fatal-error/resets-plumbing
+tests against a minimal protocol-speaking fake server.
 """
 
 import asyncio
@@ -29,23 +21,27 @@ from players.client import PlayerError, play_episode
 
 from tests.test_server import ServerHarness, make_config
 
+OBS_SIZE = 1707
+
 
 # -- full episodes driven by the client library ------------------------------
 
-async def test_random_players_complete_10_seat_episode(tmp_path):
+async def test_random_players_complete_8_seat_episode(tmp_path):
     cfg = make_config(max_ticks=12)
     async with ServerHarness(cfg, tmp_path) as h:
         results = await asyncio.gather(*(
             play_episode(random_player.RandomPolicy(seed=s),
                          h.ws_url(s, f"token-{s}"))
-            for s in range(10)))
+            for s in range(8)))
         engine_result = await h.episode_task
 
     # every client got the same result doc from the done message
     assert all(isinstance(r, dict) for r in results)
     assert all(r["final_tick"] == engine_result.final_tick for r in results)
-    assert sum(results[0]["scores"]) == 5.0
-    assert len(results[0]["scores"]) == 10
+    # score floor: every agent is alive at min(comb,prof) >= 1 (an ended
+    # life banks its min, so a death never drops a seat below 1)
+    assert len(results[0]["scores"]) == 8
+    assert all(s >= 1 for s in results[0]["scores"])
 
     # artifacts written: results + parseable replay
     written = json.loads(h.results_path.read_text())
@@ -53,19 +49,22 @@ async def test_random_players_complete_10_seat_episode(tmp_path):
     replay = Replay.parse(h.replay_path.read_bytes())
     assert replay.tick_count == engine_result.final_tick
     # nobody degraded to NOOP: the clients kept up every tick
-    assert written["noop_ticks"] == [0] * 10
+    assert written["noop_ticks"] == [0] * 8
 
 
-async def test_random_players_complete_team_variant(tmp_path):
-    """Same client code drives a 5-hero seat: 5 obs in, 5 action rows out."""
-    cfg = make_config(num_seats=2, max_ticks=10)
+async def test_random_players_complete_multi_hero_variant(tmp_path):
+    """Same client code drives a 4-hero seat: 4 obs + 4 resets in,
+    4 one-int action rows out."""
+    cfg = make_config(num_seats=2, heroes_per_seat=4, max_ticks=10)
     seen_obs_counts = set()
+    seen_resets = []
 
     class CountingRandomPolicy(random_player.RandomPolicy):
-        def __call__(self, tick, obs_rows):
+        def __call__(self, tick, obs_rows, resets):
             seen_obs_counts.add(len(obs_rows))
-            assert all(len(o) == 510 for o in obs_rows)
-            return super().__call__(tick, obs_rows)
+            assert all(len(o) == OBS_SIZE for o in obs_rows)
+            seen_resets.append((tick, resets))
+            return super().__call__(tick, obs_rows, resets)
 
     async with ServerHarness(cfg, tmp_path) as h:
         results = await asyncio.gather(
@@ -73,10 +72,14 @@ async def test_random_players_complete_team_variant(tmp_path):
             play_episode(CountingRandomPolicy(seed=1), h.ws_url(1, "token-1")))
         engine_result = await h.episode_task
 
-    assert seen_obs_counts == {5}
-    assert sum(results[0]["scores"]) == 1.0
+    assert seen_obs_counts == {4}
+    # protocol v2: resets reach the policy every tick, all False at tick 0
+    assert all(len(r) == 4 and all(isinstance(b, bool) for b in r)
+               for _, r in seen_resets)
+    tick0_resets = [r for t, r in seen_resets if t == 0]
+    assert tick0_resets and all(r == [False] * 4 for r in tick0_resets)
+    assert len(results[0]["scores"]) == 2
     written = json.loads(h.results_path.read_text())
-    assert written["team"] == ["radiant", "dire"]
     assert written["noop_ticks"] == [0, 0]
     assert engine_result.final_tick == 10
 
@@ -156,10 +159,11 @@ async def test_duplicate_seat_409_retry_budget_is_bounded():
 
 # -- reconnect behavior ------------------------------------------------------
 
-def _obs_msg(tick, heroes=1):
+def _obs_msg(tick, heroes=1, resets=None):
     return json.dumps({
         "tick": tick,
-        "obs": [base64.b64encode(bytes(510)).decode("ascii")] * heroes,
+        "obs": [base64.b64encode(bytes(OBS_SIZE)).decode("ascii")] * heroes,
+        "resets": [False] * heroes if resets is None else resets,
     })
 
 
@@ -220,7 +224,7 @@ async def test_client_reconnects_after_midgame_drop():
     assert fake.connections == 2
     # all three ticks answered, echoing the server's tick numbers
     assert [m["tick"] for m in fake.received] == [0, 1, 2]
-    assert all(len(m["actions"]) == 1 and len(m["actions"][0]) == 6
+    assert all(len(m["actions"]) == 1 and len(m["actions"][0]) == 1
                for m in fake.received)
 
 
@@ -279,6 +283,8 @@ async def test_reconnect_attempts_are_logged(capsys):
     assert "2 ticks answered so far" in err
 
 
+# -- malformed messages ------------------------------------------------------
+
 async def test_malformed_obs_is_clean_player_error():
     """A garbage obs payload raises PlayerError (clean exit-1 path in
     run_policy_main), not a raw TypeError/binascii traceback."""
@@ -304,6 +310,75 @@ async def test_malformed_obs_is_clean_player_error():
         await server.close()
 
 
+@pytest.mark.parametrize("resets_field", [
+    None,                # missing entirely
+    [True],              # wrong length for 2 heroes
+    [1, 0],              # right length, not bools
+    "nope",              # not a list
+])
+async def test_missing_or_malformed_resets_is_clean_player_error(resets_field):
+    """Protocol v2 requires resets every tick; a missing/mis-shaped field
+    must fail loudly — silently defaulting would corrupt recurrent
+    policies' state across respawns."""
+
+    async def bad_resets_server(request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        msg = {"tick": 0, "obs": [
+            base64.b64encode(bytes(OBS_SIZE)).decode("ascii")] * 2}
+        if resets_field is not None:
+            msg["resets"] = resets_field
+        await ws.send_str(json.dumps(msg))
+        async for _ in ws:
+            pass
+        return ws
+
+    app = web.Application()
+    app.router.add_get("/player", bad_resets_server)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        with pytest.raises(PlayerError, match="malformed resets"):
+            await play_episode(
+                random_player.RandomPolicy(seed=0),
+                str(server.make_url("/player")))
+    finally:
+        await server.close()
+
+
+async def test_resets_reach_the_policy():
+    """The client passes each tick's resets list through to the policy
+    verbatim (the recurrent-state-zeroing hook)."""
+    sent = [[False, False], [True, False], [False, True]]
+    seen = []
+
+    async def resets_server(request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        for t, resets in enumerate(sent):
+            await ws.send_str(_obs_msg(t, heroes=2, resets=resets))
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    break
+        await ws.send_str(json.dumps({"done": True, "result": {}}))
+        await ws.close()
+        return ws
+
+    def recording_policy(tick, obs_rows, resets):
+        seen.append((tick, list(resets)))
+        return [[4]] * len(obs_rows)
+
+    app = web.Application()
+    app.router.add_get("/player", resets_server)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        await play_episode(recording_policy, str(server.make_url("/player")))
+    finally:
+        await server.close()
+    assert seen == [(0, sent[0]), (1, sent[1]), (2, sent[2])]
+
+
 async def test_policy_row_count_mismatch_is_fatal():
     """A policy returning the wrong number of action rows fails fast
     locally instead of degrading to silent server-side strikes."""
@@ -323,7 +398,7 @@ async def test_policy_row_count_mismatch_is_fatal():
     try:
         with pytest.raises(PlayerError, match="2 action rows for 1 heroes"):
             await play_episode(
-                lambda tick, obs_rows: [[3, 3, 0, 0, 0, 0]] * 2,
+                lambda tick, obs_rows, resets: [[4]] * 2,
                 str(server.make_url("/player")))
     finally:
         await server.close()
@@ -358,16 +433,17 @@ def test_random_policy_seeded_and_in_range(monkeypatch):
 
     a = random_player.RandomPolicy(seed=42)
     b = random_player.RandomPolicy(seed=42)
-    obs_rows = [bytes(510)] * 5
-    acts_a = [a(t, obs_rows) for t in range(20)]
-    acts_b = [b(t, obs_rows) for t in range(20)]
+    obs_rows = [bytes(OBS_SIZE)] * 5
+    resets = [False] * 5
+    acts_a = [a(t, obs_rows, resets) for t in range(20)]
+    acts_b = [b(t, obs_rows, resets) for t in range(20)]
     assert acts_a == acts_b  # deterministic under COGAME_PLAYER_SEED
     arr = np.asarray(acts_a)
-    assert arr.shape == (20, 5, 6)
+    assert arr.shape == (20, 5, 1)
     assert (arr >= 0).all()
     assert (arr < np.asarray(defaults.ACT_HIGH)).all()
 
     monkeypatch.setenv("COGAME_PLAYER_SEED", "7")
     p1 = random_player.policy_from_env()
     p2 = random_player.policy_from_env()
-    assert p1(0, obs_rows) == p2(0, obs_rows)
+    assert p1(0, obs_rows, resets) == p2(0, obs_rows, resets)
