@@ -15,11 +15,15 @@ variables (both appear in the Coworld cookbook's docker examples).
 A policy is a callable ``policy(tick, obs_rows, resets) -> actions``
 where ``obs_rows`` is a list of raw 1707-byte observation blobs (one per
 hero this seat controls), ``resets`` a parallel list of bools (protocol
-v2: ``resets[j]`` true means hero j's life ended on the previous sim
-step and the paired obs is the first of its new life — a recurrent
-policy must zero that hero's state BEFORE consuming the obs; stateless
-policies may ignore it), and the return value is a matching-length
-nested sequence of one action int per hero.
+v2: ``resets[j]`` true means hero j's life ended on a sim step this
+seat has not yet acknowledged — a recurrent policy must zero that
+hero's state BEFORE consuming this tick's obs; stateless policies may
+ignore it. Delivery is at-least-once, see docs/PROTOCOL.md: for a seat
+answering every tick it is exactly the previous step's done flags, and
+after a lag/reconnect gap the flag repeats until a valid reply
+acknowledges it — a duplicate zeroes one extra tick of state, bounded
+and harmless), and the return value is a matching-length nested
+sequence of one action int per hero.
 
 Reconnects: the server allows a dead seat to reconnect, so transient
 connection drops are retried with a bounded number of consecutive
