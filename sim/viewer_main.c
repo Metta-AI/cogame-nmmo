@@ -78,6 +78,12 @@ static double g_time_acc = 0.0; // speed-scaled ms toward the next tick
 static unsigned int g_seed = 0;
 static int g_loaded = 0;
 
+#ifdef NMMO3_RENDER
+// Camera-follow seat (defined with the render half below); tentatively
+// declared here so viewer_load can reset it on (re)load.
+static int g_follow;
+#endif
+
 // Interpolation phase for the render half, in units of
 // VIEWER_FRAMES_PER_TICK: how far the display sits through the current
 // [last, cur] entity-position interpolation window. 0..N-1 mid-sweep;
@@ -153,6 +159,12 @@ int viewer_load(const unsigned char* data, int len, unsigned int seed,
     g_playing = 0;
     g_time_acc = 0.0;
     g_phase = VIEWER_FRAMES_PER_TICK;  // display tick 0 exactly
+#ifdef NMMO3_RENDER
+    // A follow pid kept from a previous, larger replay would index out
+    // of the new roster (viewer_set_follow validates against
+    // g_num_agents only at set time).
+    g_follow = 0;
+#endif
     sim_fresh();
     g_loaded = 1;
     return g_total_ticks;
@@ -273,7 +285,8 @@ unsigned int viewer_state_digest(void) {
 #ifdef NMMO3_RENDER
 // Seat the camera follows in centered mode (upstream client->my_player).
 // Applied every frame so upstream's console "play" command can't
-// silently clobber it.
+// silently clobber it. (Tentatively declared above; reset by
+// viewer_load.)
 static int g_follow = 0;
 
 void viewer_set_follow(int pid) {

@@ -92,15 +92,23 @@ function parseHeader(buf) {
 }
 
 // The replay body stride: seat i controls agents [i*h, (i+1)*h). A header
-// that cannot state the topology is unusable — fail loudly.
+// that cannot state the topology is unusable — fail loudly, and with a
+// specific message for the out-of-range case (the C viewer_load would
+// only return a generic -1 at its VIEWER_MAX_AGENTS backstop).
+const MAX_AGENTS = 1024;  // sim/viewer_main.c VIEWER_MAX_AGENTS
 function agentTopology(cfg) {
   const h = cfg.heroes_per_seat;
   if (!Array.isArray(cfg.players) || cfg.players.length < 1 ||
       !Number.isInteger(h) || h < 1) {
     throw new Error("header config lacks players/heroes_per_seat topology");
   }
-  return { seats: cfg.players.length, heroesPerSeat: h,
-           agents: cfg.players.length * h };
+  const agents = cfg.players.length * h;
+  if (agents > MAX_AGENTS) {
+    throw new Error(
+      `replay topology out of range: ${cfg.players.length} seats x ` +
+      `${h} heroes = ${agents} agents (viewer cap ${MAX_AGENTS})`);
+  }
+  return { seats: cfg.players.length, heroesPerSeat: h, agents };
 }
 
 // Standings list: seats ranked by final score (header.result.scores —
@@ -251,17 +259,22 @@ $("follow").addEventListener("change", (e) => {
 // the preview state; seekGen guards a stale scheduled seek from
 // clobbering a newer drag.
 let seekGen = 0;
+let seekPending = false;  // a scheduled re-sim has not landed yet
 $("seek").addEventListener("input", (e) => {
   seeking = true;
   $("tickinfo").textContent = `${e.target.value} / ${totalTicks}`;
 });
-const endSeekPreview = () => { seeking = false; };
+// pointerup/keyup can fire AFTER `change` scheduled the re-sim; clearing
+// the preview then would snap the slider back to the pre-seek tick for a
+// frame. While a seek is pending, the pending seek owns the flag.
+const endSeekPreview = () => { if (!seekPending) seeking = false; };
 $("seek").addEventListener("pointerup", endSeekPreview);
 $("seek").addEventListener("keyup", endSeekPreview);
 $("seek").addEventListener("change", (e) => {
   const target = Number(e.target.value);
   const gen = ++seekGen;
   seeking = true;  // hold the preview until this seek lands
+  seekPending = true;
   setStatus(`seeking to tick ${target} ...`);
   // let the status paint before the (blocking) re-sim
   setTimeout(() => {
@@ -269,6 +282,7 @@ $("seek").addEventListener("change", (e) => {
     Module.ccall("viewer_seek", null, ["number"], [target]);
     setStatus("");
     seeking = false;
+    seekPending = false;
   }, 20);
 });
 
