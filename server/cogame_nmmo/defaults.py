@@ -26,7 +26,9 @@ ACT_HIGH = (26,)
 # No-op: ATN_NOOP (vendored nmmo3.h:50).
 NOOP_ACTION = (4,)
 
-DEFAULT_NUM_SEATS = 8      # default variant: 8 seats x 1 agent, FFA
+# The default VARIANT is 8 seats x 1 agent (FFA), but seat count is not a
+# server default: it always comes from the config's players array (the
+# manifest's variant definitions own the 8).
 DEFAULT_MAX_TICKS = 5000
 DEFAULT_HEROES_PER_SEAT = 1
 DEFAULT_TICK_DEADLINE_MS = 1000

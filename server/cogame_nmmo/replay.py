@@ -138,8 +138,10 @@ class Replay:
             header = json.loads(data[_PREFIX_LEN:_PREFIX_LEN + header_len])
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ReplayError(f"header is not valid JSON: {exc}") from exc
-        if not isinstance(header, dict) or \
-                not isinstance(header.get("tick_count"), int):
+        tick_count = header.get("tick_count") if isinstance(header, dict) \
+            else None
+        # bool is an int subclass: `true` must not parse as tick_count 1
+        if not isinstance(tick_count, int) or isinstance(tick_count, bool):
             raise ReplayError("header missing integer tick_count")
         num_agents = cls._header_num_agents(header)
         body = data[_PREFIX_LEN + header_len:]

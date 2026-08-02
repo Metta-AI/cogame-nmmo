@@ -116,6 +116,17 @@ def test_truncated_header_rejected():
         Replay.parse(b"NMMO\x01\xff\xff\xff\x00rest")
 
 
+def test_bool_tick_count_rejected():
+    # bool is an int subclass: tick_count true must not parse as 1
+    header = json.dumps({
+        "tick_count": True,
+        "config": {"players": [{"name": "a"}], "heroes_per_seat": 1},
+    }).encode()
+    data = b"NMMO\x01" + len(header).to_bytes(4, "little") + header
+    with pytest.raises(ReplayError, match="integer tick_count"):
+        Replay.parse(data)
+
+
 def test_header_without_agent_topology_rejected():
     # the body stride comes from the header config; a header without it
     # is unusable even if tick_count parses
