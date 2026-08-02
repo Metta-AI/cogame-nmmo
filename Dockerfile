@@ -1,10 +1,17 @@
 # cogame-nmmo Coworld image: game server + bundled players in one image.
 #
 # Stage 1 (wasm-builder) compiles the vendored PufferLib nmmo3 sim with
-# emscripten: sim wasm (wasmtime host), brain wasm (baseline policy), and
-# the browser replay-viewer bundle. Wasm artifacts are architecture-
-# independent, so this stage runs on the build host's native platform
-# ($BUILDPLATFORM) — no qemu emulation for the compile on ARM hosts.
+# emscripten. Wasm artifacts are architecture-independent, so this stage
+# runs on the build host's native platform ($BUILDPLATFORM) — no qemu
+# emulation for the compile on ARM hosts.
+#
+# NOTE (phase status, mirrors .github/workflows/ci.yml): only
+# sim/build_sim.sh runs here for now. build_brain.sh returns in Phase N3
+# (nmmo3 MMONet brain shim + its xxd-embedded weights and the raylib
+# prefetch it doesn't need) and build_viewer.sh in Phase N4 (nmmo3
+# renderer viewer bundle + raylib web prefetch layer + viewer/dist COPY);
+# until those phases land their shim sources are still moba-shaped and
+# the scripts fail deliberately at compile.
 #
 # Stage 2 is the linux/amd64 runtime: python:3.11-slim + locked deps via
 # uv, with the repo layout preserved at /workspace (server code resolves
@@ -13,9 +20,8 @@
 #
 # Entrypoints (Coworld manifest `run`):
 #   game            python -m cogame_nmmo.server
-#   baseline player python -m players.baseline_player
-#   random player   python -m players.random_player
-#   scripted player python -m players.scripted_player
+#   baseline player python -m players.baseline_player   (Phase N3)
+#   random player   python -m players.random_player     (Phase N3 adapts)
 #
 # Build: docker build --platform=linux/amd64 -t cogame-nmmo:local .
 
@@ -29,30 +35,13 @@ RUN apt-get update && \
 
 WORKDIR /src
 
-# Prefetch the raylib web build into the exact cache location
-# sim/build_viewer.sh expects, as its own layer so source edits never
-# re-download. URL/sha MUST stay in sync with sim/build_viewer.sh; if
-# they drift, build_viewer.sh just re-fetches (correct, slower).
-ARG RAYLIB_ZIP_URL="https://github.com/raysan5/raylib/releases/download/5.5/raylib-5.5_webassembly.zip"
-ARG RAYLIB_ZIP_SHA256="798b6bea650e78a60fe49f106a15d92ea4e33efd3aa1b3efa34b0438a14bbf2c"
-RUN mkdir -p build && \
-    curl -fsSL --retry 3 "$RAYLIB_ZIP_URL" -o /tmp/raylib-web.zip && \
-    echo "$RAYLIB_ZIP_SHA256  /tmp/raylib-web.zip" | shasum -a 256 -c - && \
-    (cd build && unzip -q /tmp/raylib-web.zip && \
-     mv raylib-5.5_webassembly raylib-web && \
-     printf '%s\n' "$RAYLIB_ZIP_SHA256" > raylib-web/.zip-sha256) && \
-    rm /tmp/raylib-web.zip
-
 COPY vendor/ vendor/
 COPY sim/ sim/
-COPY viewer/index.html viewer/index.html
 
-# apply_patches.sh runs inside each build script; the four-script
-# pipeline is sim/apply_patches.sh && build_sim && build_brain &&
-# build_viewer (apply is idempotent).
-RUN bash sim/build_sim.sh && \
-    bash sim/build_brain.sh && \
-    bash sim/build_viewer.sh
+# apply_patches.sh runs inside the build script (idempotent). Phases
+# N3/N4 append build_brain.sh and build_viewer.sh here — see the NOTE
+# at the top of this file.
+RUN bash sim/build_sim.sh
 
 
 FROM python:3.11-slim
@@ -74,7 +63,7 @@ ENV PATH="/workspace/.venv/bin:$PATH" \
 
 COPY server/ server/
 COPY players/ players/
-COPY --from=wasm-builder /src/build/nmmo3_sim.wasm /src/build/nmmo3_brain.wasm build/
-COPY --from=wasm-builder /src/viewer/dist/ viewer/dist/
+COPY --from=wasm-builder /src/build/nmmo3_sim.wasm build/
+# Phase N3 restores build/nmmo3_brain.wasm; Phase N4 restores viewer/dist/.
 
 CMD ["python", "-m", "cogame_nmmo.server"]

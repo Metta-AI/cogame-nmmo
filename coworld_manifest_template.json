@@ -11,7 +11,7 @@
     "replay_viewer": {
       "bundle": "static-replay-viewer"
     },
-    "description": "PufferLib's Ocean NMMO3 (Neural MMO 3) as a Coworld: a persistent 512x512 survival world, bit-exact with the upstream training environment (same C sim compiled to wasm, same 1707-byte observations and 26-way discrete actions). Eight free-for-all agents harvest resources, fight enemies, level combat and profession skills, and equip gear; death or 500-tick stagnation respawns an agent in place. Episodes end at the tick cap; seats are ranked by cumulative min(combat, profession) level over their lives. Replays re-simulate deterministically in a static wasm viewer from the recorded seed and per-tick action log. NOTE: schema sections below are inherited from the moba template and are rewritten in Phase N2 (results/config) and N5 (packaging).",
+    "description": "PufferLib's Ocean NMMO3 (Neural MMO 3) as a Coworld: a persistent 512x512 survival world, bit-exact with the upstream training environment (same C sim compiled to wasm, same 1707-byte observations and 26-way discrete actions). Eight free-for-all agents harvest resources, fight enemies, level combat and profession skills, and equip gear; death or 500-tick stagnation respawns an agent in place. Episodes end at the tick cap; seats are ranked by score: cumulative min(combat, profession) level over their lives. Replays re-simulate deterministically in a static wasm viewer from the recorded seed and per-tick action log. NOTE: player/certification images and the viewer bundle are finalized in Phases N3-N5.",
     "owner": "daveey@softmax.com",
     "runnable": {
       "type": "game",
@@ -36,17 +36,17 @@
           "description": "One connection token per player seat, indexed by seat slot. Injected by the runner; never authored.",
           "type": "array",
           "minItems": 2,
-          "maxItems": 10,
+          "maxItems": 16,
           "items": {
             "type": "string",
             "minLength": 1
           }
         },
         "players": {
-          "description": "One player display-name object per seat, indexed by seat slot. players x heroes_per_seat must equal 10: ten seats with heroes_per_seat 1, or two seats with heroes_per_seat 5.",
+          "description": "One player display-name object per seat, indexed by seat slot. Total sim agents = players x heroes_per_seat (num_agents is elastic upstream; the default variant is 8 seats x 1 agent, free-for-all).",
           "type": "array",
           "minItems": 2,
-          "maxItems": 10,
+          "maxItems": 16,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -66,22 +66,19 @@
           "type": "integer"
         },
         "max_ticks": {
-          "description": "Tick cap; reaching it ends the episode with an Ancient-health tiebreak.",
+          "description": "Tick cap; reaching it ends the episode (NMMO3 has no in-env termination) with seats ranked by score.",
           "type": "integer",
           "minimum": 1,
-          "default": 40000
+          "default": 5000
         },
         "heroes_per_seat": {
-          "description": "Heroes each seat controls: 1 (ten seats, one hero each) or 5 (two seats, one full team each).",
+          "description": "Sim agents each seat controls (default 1: one agent per policy, free-for-all).",
           "type": "integer",
-          "enum": [
-            1,
-            5
-          ],
+          "minimum": 1,
           "default": 1
         },
         "tick_deadline_ms": {
-          "description": "Per-tick action deadline in milliseconds; a late/missing/malformed reply plays the no-op action for that seat's heroes.",
+          "description": "Per-tick action deadline in milliseconds; a late/missing/malformed reply plays the no-op action for that seat's agents.",
           "type": "integer",
           "minimum": 1,
           "default": 1000
@@ -93,7 +90,7 @@
           "default": 180
         },
         "wall_clock_budget_seconds": {
-          "description": "Engine wall-clock hard stop: a slow episode ends itself with end_reason wall_clock (ancient-health tiebreak, artifacts written) once this much real time has elapsed. Default: min(0.9 x episode_timeout_minutes x 60, max_ticks x tick_deadline_ms / 1000) - always under the platform's episode_timeout_minutes container kill, which would lose results and replay.",
+          "description": "Engine wall-clock hard stop: a slow episode ends itself with end_reason wall_clock (scores read as they stand, artifacts written) once this much real time has elapsed. Default: min(0.9 x episode_timeout_minutes x 60, max_ticks x tick_deadline_ms / 1000) - always under the platform's episode_timeout_minutes container kill, which would lose results and replay.",
           "type": "number",
           "exclusiveMinimum": 0
         },
@@ -101,8 +98,8 @@
           "description": "Number of agent seats; must equal the player slot count. Used by the platform ladder service for block seating; ignored by the game server.",
           "type": "integer",
           "minimum": 2,
-          "maximum": 10,
-          "default": 10
+          "maximum": 16,
+          "default": 8
         }
       }
     },
@@ -113,14 +110,11 @@
       "required": [
         "names",
         "scores",
-        "win",
-        "team",
-        "winner",
+        "reward_sums",
         "end_reason",
         "final_tick",
         "seed",
-        "reward_sums",
-        "ancient_healths",
+        "state_digest",
         "agent_stats",
         "noop_ticks",
         "dead_seats",
@@ -131,59 +125,33 @@
           "description": "One player name per seat, in seat-slot order.",
           "type": "array",
           "minItems": 2,
-          "maxItems": 10,
+          "maxItems": 16,
           "items": {
             "type": "string"
           }
         },
         "scores": {
-          "description": "One scalar score per seat: win 1.0, draw 0.5, loss 0.0.",
+          "description": "One scalar score per seat (higher = better): cumulative min(combat, profession) level over the seat's agents' ended lives plus the final life's min, summed over the seat's agents. Episodes have no winner; ranking consumers order by this value. sim_fault episodes score all seats 0.0 (equal = drawn).",
           "type": "array",
           "minItems": 2,
-          "maxItems": 10,
+          "maxItems": 16,
           "items": {
             "type": "number"
           }
         },
-        "win": {
-          "description": "One win flag per seat.",
+        "reward_sums": {
+          "description": "Per-seat sum of the sim's per-agent training rewards over the episode.",
           "type": "array",
           "minItems": 2,
-          "maxItems": 10,
+          "maxItems": 16,
           "items": {
-            "type": "boolean"
+            "type": "number"
           }
-        },
-        "team": {
-          "description": "One team name per seat.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 10,
-          "items": {
-            "type": "string",
-            "enum": [
-              "radiant",
-              "dire"
-            ]
-          }
-        },
-        "winner": {
-          "description": "Winning team: 0 radiant, 1 dire, null draw.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "enum": [
-            0,
-            1,
-            null
-          ]
         },
         "end_reason": {
-          "description": "Why the episode ended: an Ancient fell, the tick cap was reached, the engine's wall-clock budget expired (tick_cap and wall_clock share the ancient-health tiebreak), or the sim reported an internal fault (sim_fault: no winner, draw scores, partial replay).",
+          "description": "Why the episode ended: the tick cap was reached, the engine's wall-clock budget expired, or the sim reported an internal fault (sim_fault: all scores 0.0, partial replay). NMMO3 has no in-env termination.",
           "type": "string",
           "enum": [
-            "ancient",
             "tick_cap",
             "wall_clock",
             "sim_fault"
@@ -198,77 +166,49 @@
           "description": "The deterministic sim seed the episode ran with.",
           "type": "integer"
         },
-        "reward_sums": {
-          "description": "Per-seat sum of the sim's per-hero training rewards over the episode.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 10,
-          "items": {
-            "type": "number"
-          }
-        },
-        "ancient_healths": {
-          "description": "Remaining Ancient health at episode end: [radiant, dire].",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "number"
-          }
+        "state_digest": {
+          "description": "u32 sim state digest at episode end; a re-simulation of the replay (seed + recorded actions) must reproduce it. 0 for sim_fault episodes whose state was unreadable.",
+          "type": "integer",
+          "minimum": 0
         },
         "agent_stats": {
-          "description": "Per-hero end-of-episode stats, indexed by hero pid (0-4 radiant, 5-9 dire).",
+          "description": "Per-agent end-of-episode score breakdown, indexed by agent pid; seat i owns pids [i*heroes_per_seat, (i+1)*heroes_per_seat) — with the default heroes_per_seat=1 this is the per-seat breakdown.",
           "type": "array",
-          "minItems": 10,
-          "maxItems": 10,
+          "minItems": 2,
+          "maxItems": 16,
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": [
-              "level",
-              "kills",
+              "cum_min_comb_prof",
               "deaths",
-              "towers_killed",
-              "creeps_killed",
-              "neutrals_killed",
-              "xp",
-              "damage_dealt",
-              "damage_received",
-              "healing_dealt",
-              "healing_received"
+              "comb_lvl",
+              "prof_lvl",
+              "gold",
+              "time_alive"
             ],
             "properties": {
-              "level": {
-                "type": "integer"
-              },
-              "kills": {
+              "cum_min_comb_prof": {
+                "description": "Sum of min(comb_lvl, prof_lvl) over the agent's ended lives.",
                 "type": "integer"
               },
               "deaths": {
+                "description": "Ended lives: attack deaths plus 500-tick stagnation resets.",
                 "type": "integer"
               },
-              "towers_killed": {
+              "comb_lvl": {
+                "description": "Final life's combat level.",
                 "type": "integer"
               },
-              "creeps_killed": {
+              "prof_lvl": {
+                "description": "Final life's profession level.",
                 "type": "integer"
               },
-              "neutrals_killed": {
+              "gold": {
                 "type": "integer"
               },
-              "xp": {
-                "type": "integer"
-              },
-              "damage_dealt": {
-                "type": "integer"
-              },
-              "damage_received": {
-                "type": "integer"
-              },
-              "healing_dealt": {
-                "type": "integer"
-              },
-              "healing_received": {
+              "time_alive": {
+                "description": "Ticks since the final life spawned.",
                 "type": "integer"
               }
             }
@@ -278,7 +218,7 @@
           "description": "Per-seat count of ticks played as the no-op fallback (late, missing, malformed, or dead seat).",
           "type": "array",
           "minItems": 2,
-          "maxItems": 10,
+          "maxItems": 16,
           "items": {
             "type": "integer",
             "minimum": 0
@@ -288,7 +228,7 @@
           "description": "Per-seat strike-rule dead flag at episode end (10 consecutive missed ticks marks a seat dead; a valid reply revives it).",
           "type": "array",
           "minItems": 2,
-          "maxItems": 10,
+          "maxItems": 16,
           "items": {
             "type": "boolean"
           }
@@ -297,7 +237,7 @@
           "description": "Per-seat NOOP-fallback cause counters. timeout/malformed/disconnected/host_error partition noop_ticks; wrong_tick counts mis-addressed reply messages at the transport (such a tick also counts as timeout).",
           "type": "array",
           "minItems": 2,
-          "maxItems": 10,
+          "maxItems": 16,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -366,7 +306,7 @@
       "id": "baseline",
       "name": "baseline",
       "type": "player",
-      "description": "Upstream PufferLib pretrained policy (moba_weights.bin) run through the vendored puffernet forward pass compiled to wasm - the exact network the sim was trained with. Image placeholder is replaced at deploy time.",
+      "description": "Upstream PufferLib pretrained MMONet policy (nmmo3_weights.bin) run through the demo network forward pass compiled to wasm - the exact network the sim was trained with (Phase N3). Image placeholder is replaced at deploy time.",
       "image": "{{PLAYER_IMAGE}}",
       "run": [
         "python",
@@ -388,8 +328,8 @@
   "variants": [
     {
       "id": "default",
-      "name": "Default (10 seats)",
-      "description": "Ten seats, one hero each: five independent policies per team playing the full 5v5 MOBA.",
+      "name": "Default (8 seats FFA)",
+      "description": "Eight seats, one agent each: free-for-all survival, seats ranked by cumulative min(combat, profession) score.",
       "game_config": {
         "players": [
           {
@@ -415,37 +355,11 @@
           },
           {
             "name": "Player8"
-          },
-          {
-            "name": "Player9"
-          },
-          {
-            "name": "Player10"
           }
         ],
-        "num_agents": 10,
+        "num_agents": 8,
         "heroes_per_seat": 1,
-        "max_ticks": 40000,
-        "tick_deadline_ms": 1000,
-        "wall_clock_budget_seconds": 3240
-      }
-    },
-    {
-      "id": "team",
-      "name": "Team (2 seats)",
-      "description": "Two seats, five heroes each: one policy controls a whole team, radiant vs dire.",
-      "game_config": {
-        "players": [
-          {
-            "name": "Radiant"
-          },
-          {
-            "name": "Dire"
-          }
-        ],
-        "num_agents": 2,
-        "heroes_per_seat": 5,
-        "max_ticks": 40000,
+        "max_ticks": 5000,
         "tick_deadline_ms": 1000,
         "wall_clock_budget_seconds": 3240
       }
@@ -453,12 +367,6 @@
   ],
   "certification": {
     "players": [
-      {
-        "player_id": "baseline"
-      },
-      {
-        "player_id": "baseline"
-      },
       {
         "player_id": "baseline"
       },
@@ -509,18 +417,12 @@
         },
         {
           "name": "Player8"
-        },
-        {
-          "name": "Player9"
-        },
-        {
-          "name": "Player10"
         }
       ],
-      "num_agents": 10,
+      "num_agents": 8,
       "heroes_per_seat": 1,
       "seed": 42,
-      "max_ticks": 2000,
+      "max_ticks": 1500,
       "tick_deadline_ms": 1000,
       "player_connect_timeout_seconds": 60
     }

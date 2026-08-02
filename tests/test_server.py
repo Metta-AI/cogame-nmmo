@@ -1,11 +1,3 @@
-# Inherited cogame-moba suite: exercises the moba-shaped modules this fork
-# has not adapted yet. Skipped (not deleted) pending Phase N2 (server adaptation),
-# which replaces it — see docs/plans/2026-08-02-cogame-nmmo-implementation.md.
-import pytest
-
-pytest.skip("moba-specific suite pending Phase N2 (server adaptation) rewrite",
-            allow_module_level=True)
-
 """End-to-end tests for the Coworld-contract websocket game server.
 
 In-process aiohttp test server + real websocket clients.
@@ -23,16 +15,28 @@ from aiohttp.test_utils import TestServer
 
 from cogame_nmmo import defaults, uris
 from cogame_nmmo.config import GameConfig
+from cogame_nmmo.engine import NOOP_CAUSES
 from cogame_nmmo.replay import Replay
 from cogame_nmmo.server import GameServer
 
+# The closed results.json key set (triple-sync rule): must match
+# GameServer._results_doc, the manifest results_schema, and the
+# docker_smoke.sh assertions.
+RESULT_KEYS = {
+    "names", "scores", "reward_sums", "end_reason", "final_tick", "seed",
+    "state_digest", "agent_stats", "noop_ticks", "dead_seats", "noop_causes",
+}
+AGENT_STAT_KEYS = {
+    "cum_min_comb_prof", "deaths", "comb_lvl", "prof_lvl", "gold",
+    "time_alive",
+}
 
-def make_config(num_seats=10, **overrides):
-    heroes = 10 // num_seats
+
+def make_config(num_seats=8, heroes_per_seat=1, **overrides):
     d = {
         "players": [{"name": f"bot-{i}"} for i in range(num_seats)],
         "tokens": [f"token-{i}" for i in range(num_seats)],
-        "heroes_per_seat": heroes,
+        "heroes_per_seat": heroes_per_seat,
         "seed": 21,
         "max_ticks": 20,
         "tick_deadline_ms": 1000,
@@ -43,7 +47,7 @@ def make_config(num_seats=10, **overrides):
 
 
 class ServerHarness:
-    def __init__(self, cfg, tmp_path):
+    def __init__(self, cfg, tmp_path, **server_kwargs):
         self.results_path = tmp_path / "results.json"
         self.replay_path = tmp_path / "replay.bin"
         self.failure_path = tmp_path / "player_failure.json"
@@ -52,6 +56,7 @@ class ServerHarness:
             results_uri=f"file://{self.results_path}",
             save_replay_uri=f"file://{self.replay_path}",
             player_failure_uri=f"file://{self.failure_path}",
+            **server_kwargs,
         )
         self.test_server = TestServer(self.server.make_app())
         self.episode_task = None
@@ -75,8 +80,13 @@ class ServerHarness:
             f"/player?slot={slot}&token={token}"))
 
 
-async def play_random_client(harness, slot, token, heroes):
-    """A well-behaved player: random in-range actions until done."""
+async def play_random_client(harness, slot, token, heroes,
+                             seen_resets=None):
+    """A well-behaved player: random in-range actions until done.
+
+    ``seen_resets`` (optional list) collects each tick's (tick, resets)
+    pair for reset-plumbing assertions.
+    """
     rng = np.random.default_rng(slot)
     result = None
     async with aiohttp.ClientSession() as session:
@@ -90,9 +100,15 @@ async def play_random_client(harness, slot, token, heroes):
                     break
                 obs = [base64.b64decode(o) for o in data["obs"]]
                 assert len(obs) == heroes
-                assert all(len(o) == 510 for o in obs)
+                assert all(len(o) == 1707 for o in obs)
+                # protocol v2: every tick message carries per-agent resets
+                resets = data["resets"]
+                assert isinstance(resets, list) and len(resets) == heroes
+                assert all(isinstance(r, bool) for r in resets)
+                if seen_resets is not None:
+                    seen_resets.append((data["tick"], resets))
                 acts = rng.integers(
-                    0, defaults.ACT_HIGH, size=(heroes, 6)).tolist()
+                    0, defaults.ACT_HIGH, size=(heroes, 1)).tolist()
                 await ws.send_str(json.dumps(
                     {"tick": data["tick"], "actions": acts}))
     return result
@@ -100,11 +116,11 @@ async def play_random_client(harness, slot, token, heroes):
 
 # -- full episodes -----------------------------------------------------------
 
-async def test_full_episode_10_seats(tmp_path):
+async def test_full_episode_8_seats(tmp_path):
     cfg = make_config(max_ticks=15)
     async with ServerHarness(cfg, tmp_path) as h:
         clients = [play_random_client(h, s, f"token-{s}", 1)
-                   for s in range(10)]
+                   for s in range(8)]
         done_msgs = await asyncio.gather(*clients)
         result = await h.episode_task
 
@@ -113,49 +129,84 @@ async def test_full_episode_10_seats(tmp_path):
     assert done_msgs[0]["final_tick"] == result.final_tick
 
     results = json.loads(h.results_path.read_text())
-    assert results["names"] == [f"bot-{i}" for i in range(10)]
-    assert len(results["scores"]) == 10
+    assert set(results) == RESULT_KEYS
+    assert results["names"] == [f"bot-{i}" for i in range(8)]
     assert results["final_tick"] == result.final_tick
-    assert results["end_reason"] in ("ancient", "tick_cap")
+    assert results["end_reason"] == "tick_cap"
     assert results["seed"] == 21
-    assert results["team"] == ["radiant"] * 5 + ["dire"] * 5
-    assert len(results["agent_stats"]) == 10
-    # scores consistent with winner
-    if results["winner"] is None:
-        assert results["scores"] == [0.5] * 10
-    else:
-        winners = [s for i, s in enumerate(results["scores"])
-                   if defaults.team_for_seat(i, 1) == results["winner"]]
-        losers = [s for i, s in enumerate(results["scores"])
-                  if defaults.team_for_seat(i, 1) != results["winner"]]
-        assert winners == [1.0] * 5 and losers == [0.0] * 5
-    assert sum(results["scores"]) == 5.0
+    # scores: raw per-seat score values (structure, not magnitude — with
+    # random actions most agents just survive at min(comb,prof)=1).
+    # Genuinely score-increasing play needs obs decoding, which arrives
+    # with the Phase-N3 scripted player; its behavioral test covers
+    # score growth.
+    assert len(results["scores"]) == 8
+    assert all(isinstance(s, float) and s >= 0 for s in results["scores"])
+    assert sum(results["scores"]) >= 1  # someone is alive at comb=prof>=1
+    assert len(results["agent_stats"]) == 8
+    for stats in results["agent_stats"]:
+        assert set(stats) == AGENT_STAT_KEYS
+        assert stats["comb_lvl"] >= 1 and stats["prof_lvl"] >= 1
+    assert isinstance(results["state_digest"], int)
+    assert results["state_digest"] == result.state_digest
 
     replay = Replay.parse(h.replay_path.read_bytes())
     assert replay.tick_count == result.final_tick
+    assert replay.num_agents == 8
     assert replay.header["config"]["seed"] == 21
     assert [p["name"] for p in replay.header["config"]["players"]] == \
         results["names"]
-    assert replay.header["result"]["winner"] == results["winner"]
+    assert replay.header["result"]["scores"] == results["scores"]
+    assert replay.header["result"]["state_digest"] == results["state_digest"]
     # no failures reported
     assert not h.failure_path.exists()
 
 
-async def test_full_episode_team_variant(tmp_path):
-    cfg = make_config(num_seats=2, max_ticks=12)
+async def test_full_episode_multi_agent_seats(tmp_path):
+    cfg = make_config(num_seats=2, heroes_per_seat=4, max_ticks=12)
     async with ServerHarness(cfg, tmp_path) as h:
         done_msgs = await asyncio.gather(
-            play_random_client(h, 0, "token-0", 5),
-            play_random_client(h, 1, "token-1", 5))
+            play_random_client(h, 0, "token-0", 4),
+            play_random_client(h, 1, "token-1", 4))
         result = await h.episode_task
 
     assert all(m is not None for m in done_msgs)
     results = json.loads(h.results_path.read_text())
+    assert set(results) == RESULT_KEYS
     assert len(results["scores"]) == 2
-    assert results["team"] == ["radiant", "dire"]
-    assert sum(results["scores"]) == 1.0
+    assert len(results["agent_stats"]) == 8  # per agent, not per seat
     replay = Replay.parse(h.replay_path.read_bytes())
     assert replay.tick_count == result.final_tick
+    assert replay.num_agents == 8
+
+
+# -- resets over the wire (protocol v2) ---------------------------------------
+
+async def test_resets_forwarded_over_websocket(tmp_path):
+    """An agent death on tick T's step arrives as resets=[true] with tick
+    T+1's obs, on that agent's seat only. Driven by a scripted fake sim
+    so the death tick is deterministic (real-sim death forwarding is
+    covered in tests/test_engine.py)."""
+    from tests.test_engine import FakeSim
+
+    cfg = make_config(max_ticks=6, tick_deadline_ms=500)
+    fake = FakeSim(num_agents=8, dones_at={2: [5], 4: [0]})
+    async with ServerHarness(
+            cfg, tmp_path,
+            sim_factory=lambda seed, num_agents: fake) as h:
+        seen = [[] for _ in range(8)]
+        clients = [play_random_client(h, s, f"token-{s}", 1,
+                                      seen_resets=seen[s])
+                   for s in range(8)]
+        await asyncio.gather(*clients)
+        await h.episode_task
+
+    for slot in range(8):
+        for tick, resets in seen[slot]:
+            expect = (slot == 5 and tick == 3) or (slot == 0 and tick == 5)
+            assert resets == [expect], (slot, tick, resets)
+    # the flagged ticks were actually observed (not an empty loop)
+    assert any(t == 3 for t, _ in seen[5])
+    assert any(t == 5 for t, _ in seen[0])
 
 
 # -- degraded players --------------------------------------------------------
@@ -165,14 +216,14 @@ async def test_missing_player_noop_and_failure_report(tmp_path):
                       player_connect_timeout_seconds=0.4)
     async with ServerHarness(cfg, tmp_path) as h:
         clients = [play_random_client(h, s, f"token-{s}", 1)
-                   for s in range(9)]  # slot 9 never connects
+                   for s in range(7)]  # slot 7 never connects
         await asyncio.gather(*clients)
         result = await h.episode_task
 
     assert result.final_tick > 0
     failure = json.loads(h.failure_path.read_text())
-    assert failure["failed_policy_index"] == 9
-    assert "bot-9" in failure["message"]
+    assert failure["failed_policy_index"] == 7
+    assert "bot-7" in failure["message"]
     assert set(failure) == {"failed_policy_index", "message"}
     assert h.results_path.exists()
     assert h.replay_path.exists()
@@ -186,7 +237,7 @@ async def test_malformed_messages_never_crash_episode(tmp_path):
             async with session.ws_connect(h.ws_url(slot, token)) as ws:
                 garbage = iter([
                     "not json at all",
-                    json.dumps({"tick": -99, "actions": [[0] * 6]}),
+                    json.dumps({"tick": -99, "actions": [[0]]}),
                     json.dumps({"nonsense": True}),
                     json.dumps({"tick": None, "actions": "x"}),
                 ])
@@ -205,8 +256,8 @@ async def test_malformed_messages_never_crash_episode(tmp_path):
         return None
 
     async with ServerHarness(cfg, tmp_path) as h:
-        good = [play_random_client(h, s, f"token-{s}", 1) for s in range(9)]
-        results = await asyncio.gather(*good, malformed_client(h, 9, "token-9"))
+        good = [play_random_client(h, s, f"token-{s}", 1) for s in range(7)]
+        results = await asyncio.gather(*good, malformed_client(h, 7, "token-7"))
         result = await h.episode_task
 
     assert result.final_tick == 6
@@ -236,22 +287,21 @@ async def test_results_report_noop_causes(tmp_path):
         return None
 
     async with ServerHarness(cfg, tmp_path) as h:
-        good = [play_random_client(h, s, f"token-{s}", 1) for s in range(9)]
+        good = [play_random_client(h, s, f"token-{s}", 1) for s in range(7)]
         results_msgs = await asyncio.gather(
-            *good, wrong_tick_client(h, 9, "token-9"))
+            *good, wrong_tick_client(h, 7, "token-7"))
         await h.episode_task
 
     assert results_msgs[-1] is not None
     results = json.loads(h.results_path.read_text())
     causes = results["noop_causes"]
-    assert len(causes) == 10
-    assert set(causes[0]) == {"timeout", "malformed", "wrong_tick",
-                              "disconnected", "host_error"}
-    for seat in range(9):
+    assert len(causes) == 8
+    assert set(causes[0]) == set(NOOP_CAUSES)
+    for seat in range(7):
         assert all(v == 0 for v in causes[seat].values()), (seat, causes)
-    assert causes[9]["timeout"] == 4
-    assert causes[9]["wrong_tick"] >= 1
-    assert results["noop_ticks"][9] == 4
+    assert causes[7]["timeout"] == 4
+    assert causes[7]["wrong_tick"] >= 1
+    assert results["noop_ticks"][7] == 4
 
 
 async def test_dead_seat_disconnect_during_probe_then_reconnect_revives(
@@ -277,21 +327,21 @@ async def test_dead_seat_disconnect_during_probe_then_reconnect_revives(
                         return data["result"]
                     await asyncio.sleep(0.025)
                     acts = rng.integers(0, defaults.ACT_HIGH,
-                                        size=(1, 6)).tolist()
+                                        size=(1, 1)).tolist()
                     await ws.send_str(json.dumps(
                         {"tick": data["tick"], "actions": acts}))
         return None
 
     async with ServerHarness(cfg, tmp_path) as h:
         gather = asyncio.gather(*(
-            paced_client(h, s, f"token-{s}") for s in range(9)))
+            paced_client(h, s, f"token-{s}") for s in range(7)))
 
         async def flaky(h):
             # Phase 1: connect but never reply. The seat racks up strikes,
             # goes dead, and a revival probe parks on this socket (the obs
             # stream stops once the single outstanding probe is parked).
             async with aiohttp.ClientSession() as session:
-                ws = await session.ws_connect(h.ws_url(9, "token-9"))
+                ws = await session.ws_connect(h.ws_url(7, "token-7"))
                 while True:
                     try:
                         msg = await asyncio.wait_for(ws.receive(), 0.5)
@@ -301,16 +351,16 @@ async def test_dead_seat_disconnect_during_probe_then_reconnect_revives(
                         break
                 await ws.close()  # drop with the probe still parked
             # Phase 2: reconnect and play properly; must revive the seat.
-            return await play_random_client(h, 9, "token-9", 1)
+            return await play_random_client(h, 7, "token-7", 1)
 
         flaky_result = await asyncio.wait_for(flaky(h), 30)
         await gather
         result = await asyncio.wait_for(h.episode_task, 30)
 
     assert flaky_result is not None
-    assert result.seat_dead[9] is False, \
+    assert result.seat_dead[7] is False, \
         "reconnected seat never revived (stuck probe waiter?)"
-    assert 0 < result.seat_noop_ticks[9] < 80
+    assert 0 < result.seat_noop_ticks[7] < 80
 
 
 async def test_strike_death_force_closes_stale_socket_then_revive(tmp_path):
@@ -333,34 +383,34 @@ async def test_strike_death_force_closes_stale_socket_then_revive(tmp_path):
                         return data["result"]
                     await asyncio.sleep(0.025)
                     acts = rng.integers(0, defaults.ACT_HIGH,
-                                        size=(1, 6)).tolist()
+                                        size=(1, 1)).tolist()
                     await ws.send_str(json.dumps(
                         {"tick": data["tick"], "actions": acts}))
         return None
 
     async with ServerHarness(cfg, tmp_path) as h:
         gather = asyncio.gather(*(
-            paced_client(h, s, f"token-{s}") for s in range(9)))
+            paced_client(h, s, f"token-{s}") for s in range(7)))
 
         async def flaky(h):
             # Never reply; the server must close this socket when the
             # seat strikes out.
             async with aiohttp.ClientSession() as session:
-                ws = await session.ws_connect(h.ws_url(9, "token-9"))
+                ws = await session.ws_connect(h.ws_url(7, "token-7"))
                 while True:
                     msg = await ws.receive()  # no timeout: server closes
                     if msg.type != WSMsgType.TEXT:
                         break
             # Reconnect and play properly; must revive the seat.
-            return await play_random_client(h, 9, "token-9", 1)
+            return await play_random_client(h, 7, "token-7", 1)
 
         flaky_result = await asyncio.wait_for(flaky(h), 30)
         await gather
         result = await asyncio.wait_for(h.episode_task, 30)
 
     assert flaky_result is not None
-    assert result.seat_dead[9] is False
-    assert 0 < result.seat_noop_ticks[9] < 80
+    assert result.seat_dead[7] is False
+    assert 0 < result.seat_noop_ticks[7] < 80
 
 
 async def test_wall_clock_budget_writes_artifacts(tmp_path):
@@ -381,14 +431,14 @@ async def test_wall_clock_budget_writes_artifacts(tmp_path):
                         return data["result"]
                     await asyncio.sleep(0.02)
                     acts = rng.integers(0, defaults.ACT_HIGH,
-                                        size=(1, 6)).tolist()
+                                        size=(1, 1)).tolist()
                     await ws.send_str(json.dumps(
                         {"tick": data["tick"], "actions": acts}))
         return None
 
     async with ServerHarness(cfg, tmp_path) as h:
         done_msgs = await asyncio.gather(*(
-            paced_client(h, s, f"token-{s}") for s in range(10)))
+            paced_client(h, s, f"token-{s}") for s in range(8)))
         result = await asyncio.wait_for(h.episode_task, 30)
 
     assert all(m is not None for m in done_msgs)
@@ -502,7 +552,8 @@ async def test_client_player_page_token_checked(tmp_path):
 
 
 async def test_global_ws_first_message_and_done(tmp_path):
-    """Viewer gets a snapshot immediately, then the final done message."""
+    """Viewer gets a snapshot immediately, then progress standings, then
+    the final done message with the score-ranked result."""
     cfg = make_config(max_ticks=10)
     async with ServerHarness(cfg, tmp_path) as h:
         async with aiohttp.ClientSession() as session:
@@ -511,14 +562,15 @@ async def test_global_ws_first_message_and_done(tmp_path):
             first = json.loads((await asyncio.wait_for(
                 global_ws.receive(), 5)).data)
             assert first["type"] == "status"
-            assert first["players"] == [f"bot-{i}" for i in range(10)]
+            assert first["players"] == [f"bot-{i}" for i in range(8)]
             assert first["heroes_per_seat"] == 1
             assert first["done"] is False
 
             clients = [play_random_client(h, s, f"token-{s}", 1)
-                       for s in range(10)]
+                       for s in range(8)]
             gather = asyncio.gather(*clients)
             done_msg = None
+            progress_scores = []
             while True:
                 msg = await asyncio.wait_for(global_ws.receive(), 30)
                 if msg.type != WSMsgType.TEXT:
@@ -527,9 +579,15 @@ async def test_global_ws_first_message_and_done(tmp_path):
                 if data.get("done"):
                     done_msg = data
                     break
+                if "scores" in data:
+                    progress_scores.append(data["scores"])
             await gather
             assert done_msg is not None
-            assert len(done_msg["result"]["scores"]) == 10
+            assert len(done_msg["result"]["scores"]) == 8
+            # the tick-0 broadcast carries live standings (tick 0 % 50
+            # == 0; later broadcasts may be dropped under send pressure)
+            for scores in progress_scores:
+                assert len(scores) == 8
 
 
 async def test_global_ws_late_viewer_snapshot_is_self_contained(tmp_path):
@@ -538,7 +596,7 @@ async def test_global_ws_late_viewer_snapshot_is_self_contained(tmp_path):
     cfg = make_config(max_ticks=10)
     async with ServerHarness(cfg, tmp_path) as h:
         clients = [play_random_client(h, s, f"token-{s}", 1)
-                   for s in range(10)]
+                   for s in range(8)]
         await asyncio.gather(*clients)
         await h.episode_task  # episode fully finished
         async with aiohttp.ClientSession() as session:
@@ -548,7 +606,7 @@ async def test_global_ws_late_viewer_snapshot_is_self_contained(tmp_path):
                 ws.receive(), 5)).data)
             assert first["type"] == "status"
             assert first["done"] is True
-            assert len(first["result"]["scores"]) == 10
+            assert len(first["result"]["scores"]) == 8
             await ws.close()
 
 
@@ -562,7 +620,7 @@ async def test_global_ws_sender_never_crashes_episode(tmp_path):
             await asyncio.wait_for(global_ws.receive(), 5)  # snapshot
             await global_ws.send_str("not json at all")
             clients = [play_random_client(h, s, f"token-{s}", 1)
-                       for s in range(10)]
+                       for s in range(8)]
             gather = asyncio.gather(*clients)
             await asyncio.sleep(0.1)
             await global_ws.close()  # disconnect while episode is running
@@ -625,7 +683,7 @@ async def test_unsupported_scheme_rejected():
         await uris.write_uri("ftp://host/file", b"x")
 
 
-# -- replay mode (Task 2.5) --------------------------------------------------
+# -- replay mode --------------------------------------------------------------
 
 def _write_replay_bytes():
     from cogame_nmmo.replay import ReplayWriter
@@ -636,8 +694,8 @@ def _write_replay_bytes():
     for t in range(8):
         writer.append_tick(
             t, rng.integers(0, defaults.ACT_HIGH,
-                            size=(10, 6)).astype(np.uint8))
-    return writer.finalize({"winner": 0, "end_reason": "ancient",
+                            size=(8, 1)).astype(np.uint8))
+    return writer.finalize({"scores": [2.0] * 8, "end_reason": "tick_cap",
                             "final_tick": 8})
 
 
@@ -658,6 +716,10 @@ async def test_replay_mode_serves_bytes_and_viewer():
                 assert resp.content_type == "text/html"
                 html = await resp.text()
                 assert "/replay-data" in html
+                # score standings, not moba winner fields
+                assert "NMMO" in html
+                assert "standings" in html
+                assert "result.winner" not in html
             async with session.get(server.make_url("/healthz")) as resp:
                 assert resp.status == 200
     finally:
@@ -679,7 +741,7 @@ async def test_replay_mode_legacy_replay_ws_first_message():
             msg = json.loads((await asyncio.wait_for(ws.receive(), 5)).data)
             assert msg["type"] == "replay_header"
             assert msg["header"]["tick_count"] == 8
-            assert msg["header"]["result"]["winner"] == 0
+            assert msg["header"]["result"]["scores"] == [2.0] * 8
             await ws.close()
     finally:
         await server.close()
@@ -687,15 +749,15 @@ async def test_replay_mode_legacy_replay_ws_first_message():
 
 async def test_replay_mode_serves_viewer_bundle_when_built(tmp_path):
     """With a viewer/dist bundle present, /client/replay serves the real
-    viewer index and its static assets (Task 4.2)."""
+    viewer index and its static assets (Phase N4 builds the bundle)."""
     from cogame_nmmo.server import make_replay_app
 
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text(
         "<!DOCTYPE html><title>viewer</title>fetches /replay-data")
-    (dist / "moba_viewer.js").write_text("// glue")
-    (dist / "moba_viewer.wasm").write_bytes(b"\x00asm fake")
+    (dist / "nmmo_viewer.js").write_text("// glue")
+    (dist / "nmmo_viewer.wasm").write_bytes(b"\x00asm fake")
 
     data = _write_replay_bytes()
     server = TestServer(make_replay_app(data, viewer_dist=dist))
@@ -705,7 +767,7 @@ async def test_replay_mode_serves_viewer_bundle_when_built(tmp_path):
             async with session.get(server.make_url("/client/replay")) as resp:
                 assert resp.status == 200
                 # pins the relative-asset regression: the slashless URL
-                # must 302 to /client/replay/ so moba_viewer.js resolves
+                # must 302 to /client/replay/ so the viewer js resolves
                 # under /client/replay/, not /client/
                 assert [r.status for r in resp.history] == [302]
                 assert resp.url.path == "/client/replay/"
@@ -714,11 +776,11 @@ async def test_replay_mode_serves_viewer_bundle_when_built(tmp_path):
                 assert "viewer" in html
                 assert "Placeholder" not in html
             async with session.get(
-                    server.make_url("/client/replay/moba_viewer.js")) as resp:
+                    server.make_url("/client/replay/nmmo_viewer.js")) as resp:
                 assert resp.status == 200
                 assert await resp.text() == "// glue"
             async with session.get(
-                    server.make_url("/client/replay/moba_viewer.wasm")) as resp:
+                    server.make_url("/client/replay/nmmo_viewer.wasm")) as resp:
                 assert resp.status == 200
                 assert await resp.read() == b"\x00asm fake"
             # bundle mode keeps /replay-data intact
@@ -758,10 +820,10 @@ async def test_replay_mode_rejects_corrupt_replay():
         make_replay_app(b"not a replay")
 
 
-# -- sim fault containment (patch 0004) --------------------------------------
+# -- sim fault containment (patch 0002) --------------------------------------
 
 async def test_sim_fault_writes_results_and_partial_replay(tmp_path):
-    """A sim fault (patch-0004 flag) ends the episode with results.json
+    """A sim fault (patch-0002 flag) ends the episode with results.json
     (end_reason sim_fault, closed key set intact) and a parseable
     partial replay — instead of the pre-patch exit() losing both."""
     from tests.test_engine import FaultingSim
@@ -774,18 +836,19 @@ async def test_sim_fault_writes_results_and_partial_replay(tmp_path):
         cfg,
         results_uri=f"file://{results_path}",
         save_replay_uri=f"file://{replay_path}",
-        sim_factory=lambda seed: FaultingSim(fault_at=2),
+        sim_factory=lambda seed, num_agents: FaultingSim(
+            fault_at=2, num_agents=num_agents),
     )
     result = await asyncio.wait_for(server.run_episode(), 30)
     assert result.end_reason == "sim_fault"
 
     results = json.loads(results_path.read_text())
     assert results["end_reason"] == "sim_fault"
-    assert results["winner"] is None
-    assert results["scores"] == [0.5] * 10
+    # equal scores: an infra fault is nobody's loss
+    assert results["scores"] == [0.0] * 8
     # same closed key set as a normal episode
-    normal_keys = set(server._results_doc(result))
-    assert set(results) == normal_keys
+    assert set(results) == RESULT_KEYS
+    assert set(results) == set(server._results_doc(result))
     replay = Replay.parse(replay_path.read_bytes())
     assert replay.tick_count == 2
 
@@ -794,7 +857,7 @@ async def test_engine_exception_still_writes_fault_artifacts(tmp_path):
     """Even an unexpected host failure (here: the sim factory raising)
     writes fault results + the (empty) replay before re-raising."""
 
-    def exploding_factory(seed):
+    def exploding_factory(seed, num_agents):
         raise RuntimeError("host exploded")
 
     cfg = make_config(max_ticks=10, player_connect_timeout_seconds=0.1)
@@ -812,12 +875,13 @@ async def test_engine_exception_still_writes_fault_artifacts(tmp_path):
     results = json.loads(results_path.read_text())
     assert results["end_reason"] == "sim_fault"
     assert results["final_tick"] == 0
-    assert results["names"] == [f"bot-{i}" for i in range(10)]
+    assert set(results) == RESULT_KEYS
+    assert results["names"] == [f"bot-{i}" for i in range(8)]
     replay = Replay.parse(replay_path.read_bytes())
     assert replay.tick_count == 0
 
 
-# -- shutdown robustness (quality review) ------------------------------------
+# -- shutdown robustness ------------------------------------------------------
 
 async def test_unresponsive_client_never_blocks_episode_exit(tmp_path):
     """A connected client that never reads or replies must not prevent
@@ -826,16 +890,16 @@ async def test_unresponsive_client_never_blocks_episode_exit(tmp_path):
                       player_connect_timeout_seconds=2)
     async with ServerHarness(cfg, tmp_path) as h:
         async with aiohttp.ClientSession() as session:
-            silent_ws = await session.ws_connect(h.ws_url(9, "token-9"))
+            silent_ws = await session.ws_connect(h.ws_url(7, "token-7"))
             good = [play_random_client(h, s, f"token-{s}", 1)
-                    for s in range(9)]
+                    for s in range(7)]
             await asyncio.gather(*good)
             result = await asyncio.wait_for(h.episode_task, timeout=20)
             await silent_ws.close()
     assert result.final_tick == 5
     results = json.loads(h.results_path.read_text())
-    assert results["noop_ticks"][9] == 5
-    assert results["noop_ticks"][:9] == [0] * 9
+    assert results["noop_ticks"][7] == 5
+    assert results["noop_ticks"][:7] == [0] * 7
 
 
 async def test_failing_results_uri_does_not_block_replay_write(tmp_path):

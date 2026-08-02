@@ -7,11 +7,16 @@ then write ``results.json`` to ``COGAME_RESULTS_URI`` and the replay
 bytes to ``COGAME_SAVE_REPLAY_URI`` and exit 0. Seats that never connect
 are declared to ``COGAME_PLAYER_FAILURE_URI`` and played as NOOP.
 
-Wire protocol, one JSON text message per tick each way:
+Wire protocol v2, one JSON text message per tick each way:
 
-    server -> player  {"tick": t, "obs": ["<base64 510B>" x heroes]}
-    player -> server  {"tick": t, "actions": [[6 ints] x heroes]}
+    server -> player  {"tick": t, "obs": ["<base64 1707B>" x heroes],
+                       "resets": [bool x heroes]}
+    player -> server  {"tick": t, "actions": [[1 int] x heroes]}
     server -> player  {"done": true, "result": {...}}   (episode end)
+
+``resets[i]`` is True when that agent's terminal fired on the previous
+sim step (death or stagnation respawn): the obs alongside is the first
+of a new life and recurrent policies must zero that agent's state.
 
 Wrong-tick or malformed replies are treated as missing (NOOP for that
 tick); the connection stays up and the episode never crashes.
@@ -47,10 +52,10 @@ from aiohttp import WSCloseCode, WSMsgType, web
 
 from . import defaults, uris
 from .config import GameConfig
-from .engine import (NOOP_CAUSES, STAT_NAMES, EpisodeResult,
+from .engine import (NOOP_CAUSES, STAT_CODES, EpisodeResult,
                      LockstepEngine)
 from .replay import Replay, ReplayWriter, sim_wasm_sha256
-from .sim import DEFAULT_WASM_PATH, MobaSim
+from .sim import DEFAULT_WASM_PATH, NmmoSim
 
 # After artifacts are written, keep serving briefly so clients can finish
 # reading the done message and close their websockets.
@@ -137,7 +142,7 @@ class WsSeat:
     def connected(self) -> bool:
         return self.ws is not None and not self.ws.closed
 
-    async def get_actions(self, tick: int, obs: np.ndarray):
+    async def get_actions(self, tick: int, obs: np.ndarray, resets):
         ws = self.ws
         if ws is None or ws.closed:
             return None
@@ -145,6 +150,9 @@ class WsSeat:
             "tick": tick,
             "obs": [base64.b64encode(row.tobytes()).decode("ascii")
                     for row in obs],
+            # protocol v2: per-agent done flags from the previous step
+            # (recurrent policies zero that agent's state)
+            "resets": [bool(r) for r in resets],
         })
         fut = asyncio.get_running_loop().create_future()
         self._waiter = (tick, fut)
@@ -200,7 +208,7 @@ class GameServer:
                  results_uri: str | None = None,
                  save_replay_uri: str | None = None,
                  player_failure_uri: str | None = None,
-                 sim_factory=MobaSim,
+                 sim_factory=NmmoSim,
                  wasm_path=DEFAULT_WASM_PATH):
         self.config = config
         self.results_uri = results_uri
@@ -395,15 +403,37 @@ class GameServer:
                 await self._report_player_failure(seat)
 
         writer = ReplayWriter(cfg, self._wasm_sha256())
+        sim = None
+
+        def live_scores() -> list[float] | None:
+            """Current per-seat score standings for the /global feed.
+
+            Reads sim.score directly (cheap wasm calls); best-effort —
+            a faulting sim must never break the broadcast path.
+            """
+            if sim is None:
+                return None
+            try:
+                return [
+                    float(sum(sim.score(pid) for pid in
+                              defaults.seat_hero_pids(
+                                  seat, cfg.heroes_per_seat)))
+                    for seat in range(cfg.num_seats)]
+            except Exception:
+                return None
 
         def on_tick(tick, actions):
             self._last_tick = tick
             writer.append_tick(tick, actions)
             if tick % GLOBAL_TICK_EVERY == 0:
-                self._broadcast_global({"tick": tick})
+                update = {"tick": tick}
+                scores = live_scores()
+                if scores is not None:
+                    update["scores"] = scores
+                self._broadcast_global(update)
 
         try:
-            sim = self.sim_factory(seed=cfg.seed)
+            sim = self.sim_factory(seed=cfg.seed, num_agents=cfg.num_agents)
             engine = LockstepEngine(sim, cfg, self.seats, on_tick=on_tick,
                                     on_seat_dead=self._on_seat_dead)
             result = await engine.run()
@@ -498,27 +528,26 @@ class GameServer:
     def _results_doc(self, result: EpisodeResult) -> dict:
         """results.json payload.
 
-        Columnar arrays in config player/seat order (names, scores, win,
-        team) follow the coworld-ctf convention; `scores` is the field
-        cross-game Coworld consumers require. Episode metadata (winner,
-        end_reason, final_tick, seed, stats) rides alongside and is
-        declared by this game's manifest results_schema (Phase 5).
+        Columnar arrays in config player/seat order (names, scores)
+        follow the coworld-ctf convention; `scores` is the field
+        cross-game Coworld consumers require (raw final score per seat,
+        higher = better — NOT win/loss 1/0; episodes have no winner).
+        `agent_stats` is the score breakdown per agent pid (seat i owns
+        pids [i*h, (i+1)*h); with the default heroes_per_seat=1 it IS the
+        per-seat breakdown). Closed key set: triple-synced with the
+        manifest results_schema and tools/ci/docker_smoke.sh.
         """
         cfg = self.config
         return {
             "names": [p.name for p in cfg.players],
             "scores": list(result.seat_scores),
-            "win": [score == 1.0 for score in result.seat_scores],
-            "team": [
-                "radiant" if defaults.team_for_seat(
-                    seat, cfg.heroes_per_seat) == 0 else "dire"
-                for seat in range(cfg.num_seats)],
             "reward_sums": list(result.seat_reward_sums),
-            "winner": result.winner,
             "end_reason": result.end_reason,
             "final_tick": result.final_tick,
             "seed": cfg.seed,
-            "ancient_healths": list(result.ancient_healths),
+            # sim state digest at episode end: must match a re-sim of the
+            # replay (see replay.py) — cheap corruption tripwire
+            "state_digest": result.state_digest,
             "agent_stats": [dict(stats) for stats in result.agent_stats],
             # strike-rule observability: per-seat NOOP-fallback tick counts
             # and whether the seat was dead (see engine strike rule)
@@ -532,26 +561,21 @@ class GameServer:
         """A schema-complete results doc for an episode the engine lost.
 
         Same CLOSED key set as _results_doc (manifest results_schema):
-        end_reason "sim_fault", no winner, draw scores, zeroed stats.
+        end_reason "sim_fault", all scores 0.0 (equal = drawn), zeroed
+        stats.
         """
         cfg = self.config
-        zero_stats = {name: 0 for name in STAT_NAMES}
+        zero_stats = {name: 0 for name in STAT_CODES}
         return {
             "names": [p.name for p in cfg.players],
-            "scores": [0.5] * cfg.num_seats,
-            "win": [False] * cfg.num_seats,
-            "team": [
-                "radiant" if defaults.team_for_seat(
-                    seat, cfg.heroes_per_seat) == 0 else "dire"
-                for seat in range(cfg.num_seats)],
+            "scores": [0.0] * cfg.num_seats,
             "reward_sums": [0.0] * cfg.num_seats,
-            "winner": None,
             "end_reason": "sim_fault",
             "final_tick": final_tick,
             "seed": cfg.seed,
-            "ancient_healths": [0.0, 0.0],
+            "state_digest": 0,
             "agent_stats": [dict(zero_stats)
-                            for _ in range(defaults.NUM_HEROES)],
+                            for _ in range(cfg.num_agents)],
             "noop_ticks": [0] * cfg.num_seats,
             "dead_seats": [False] * cfg.num_seats,
             "noop_causes": [dict.fromkeys(NOOP_CAUSES, 0)
@@ -683,14 +707,12 @@ async function load() {
   const resp = await fetch("/replay-data");
   const buf = new Uint8Array(await resp.arrayBuffer());
   const magic = String.fromCharCode(...buf.slice(0, 4));
-  if (magic !== "MOBA") throw new Error("bad magic: " + magic);
+  if (magic !== "NMMO") throw new Error("bad magic: " + magic);
   const version = buf[4];
   if (version !== 1) throw new Error("unsupported version: " + version);
   const headerLen = new DataView(buf.buffer, 5, 4).getUint32(0, true);
   const header = JSON.parse(
     new TextDecoder().decode(buf.slice(9, 9 + headerLen)));
-  const winner = header.result.winner === null ? "draw"
-    : (header.result.winner === 0 ? "radiant" : "dire");
   const info = document.getElementById("info");
   info.textContent = "";  // build with textContent: names are player data
   const add = (label, value) => {
@@ -701,9 +723,15 @@ async function load() {
     info.appendChild(dt);
     info.appendChild(dd);
   };
-  add("players", header.config.players.map(p => p.name).join(", "));
+  const names = header.config.players.map(p => p.name);
+  const scores = header.result.scores || [];
+  // score standings, best first (no winner: seats rank by score)
+  const standings = names
+    .map((name, i) => ({name, score: scores[i]}))
+    .sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
+    .map(e => e.score === undefined ? e.name : `${e.name}: ${e.score}`);
+  add("standings", standings.join(", "));
   add("seed", header.config.seed);
-  add("winner", winner);
   add("ticks", header.tick_count);
 }
 load().catch(e => {
@@ -747,7 +775,7 @@ def make_replay_app(replay_bytes: bytes,
 
     async def handle_replay_client(request: web.Request):
         if have_bundle:
-            # index references its assets relatively (moba_viewer.js next
+            # index references its assets relatively (viewer js/wasm next
             # to it); redirect to the slash form so they resolve under
             # /client/replay/ instead of /client/.
             raise web.HTTPFound("/client/replay/")
@@ -780,7 +808,7 @@ def make_replay_app(replay_bytes: bytes,
     app.router.add_get("/client/replay", handle_replay_client)
     app.router.add_get("/client/replay/", handle_replay_index)
     if have_bundle:
-        # bundle assets (moba_viewer.{js,wasm,data}) live next to index
+        # bundle assets (viewer js/wasm/data) live next to index
         app.router.add_static("/client/replay/", dist)
     return app
 
@@ -824,8 +852,10 @@ async def async_main() -> int:
           f"({config.num_seats} seats x {config.heroes_per_seat} heroes)",
           file=sys.stderr)
     result = await server.run_episode()
-    print(f"episode over: winner={result.winner} "
-          f"end_reason={result.end_reason} tick={result.final_tick}",
+    top = max(result.seat_scores) if result.seat_scores else 0.0
+    print(f"episode over: end_reason={result.end_reason} "
+          f"tick={result.final_tick} top_score={top:g} "
+          f"scores={list(result.seat_scores)}",
           file=sys.stderr)
     await asyncio.sleep(SHUTDOWN_GRACE_SECONDS)
     await runner.cleanup()

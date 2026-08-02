@@ -4,6 +4,14 @@
 # file:// artifact URIs. Asserts the episode completes and writes
 # results.json (with the manifest's result keys) and the replay.
 #
+# NOTE (Phase N3 pending): the player containers run
+# players.baseline_player, which is still moba-shaped until Phase N3
+# rebuilds it around the nmmo3 MMONet — this script cannot pass until
+# then, and .github/workflows/ci.yml skips the episode step (image build
+# only) with the matching NOTE. The assertions below are kept in
+# triple-sync with GameServer._results_doc and the manifest
+# results_schema NOW, so N3 only re-enables the CI step.
+#
 # usage: tools/ci/docker_smoke.sh [image]   (default cogame-nmmo:ci)
 set -euo pipefail
 
@@ -18,15 +26,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Team variant (2 seats x 5 heroes) keeps the smoke to 3 containers.
+# 2 seats x 4 agents keeps the smoke to 3 containers while still
+# exercising the multi-agent seat slicing (num_agents = 8, the default
+# world population).
 cat > "${work_dir}/config.json" <<'JSON'
 {
   "seed": 7,
   "max_ticks": 200,
-  "heroes_per_seat": 5,
+  "heroes_per_seat": 4,
   "tick_deadline_ms": 1000,
   "player_connect_timeout_seconds": 120,
-  "players": [{"name": "smoke-radiant"}, {"name": "smoke-dire"}],
+  "players": [{"name": "smoke-a"}, {"name": "smoke-b"}],
   "tokens": ["token-0", "token-1"]
 }
 JSON
@@ -74,22 +84,27 @@ from pathlib import Path
 
 work = Path(sys.argv[1])
 results = json.loads((work / "results.json").read_text())
+# Closed key set: triple-synced with GameServer._results_doc and the
+# manifest results_schema.
 expected = {
-    "names", "scores", "win", "team", "winner", "end_reason", "final_tick",
-    "seed", "reward_sums", "ancient_healths", "agent_stats", "noop_ticks",
-    "dead_seats", "noop_causes",
+    "names", "scores", "reward_sums", "end_reason", "final_tick", "seed",
+    "state_digest", "agent_stats", "noop_ticks", "dead_seats", "noop_causes",
 }
 assert set(results) == expected, f"results keys drifted: {sorted(set(results) ^ expected)}"
 assert len(results["scores"]) == 2, results["scores"]
-# win (1.0 + 0.0) and draw (0.5 + 0.5) both sum to 1.0
-assert sum(results["scores"]) == 1.0, results["scores"]
+# scores are raw values, higher = better; everyone starts alive at
+# min(comb,prof) = 1, so a live episode always produces a positive total
+assert all(s >= 0 for s in results["scores"]), results["scores"]
+assert sum(results["scores"]) >= 1, results["scores"]
+assert results["end_reason"] in ("tick_cap", "wall_clock"), results["end_reason"]
+assert len(results["agent_stats"]) == 8, len(results["agent_stats"])
 # Both players must have actually played every tick: a broken player
 # entrypoint would show up as noop fallbacks / a strike-rule dead seat,
 # and must fail the smoke rather than ride a NOOP-vs-NOOP episode.
 assert results["noop_ticks"] == [0, 0], results["noop_ticks"]
 assert results["dead_seats"] == [False, False], results["dead_seats"]
 replay = (work / "replay").read_bytes()
-assert replay[:4] == b"MOBA", replay[:8]
-print(f"smoke OK: end_reason={results['end_reason']} winner={results['winner']} "
+assert replay[:4] == b"NMMO", replay[:8]
+print(f"smoke OK: end_reason={results['end_reason']} scores={results['scores']} "
       f"final_tick={results['final_tick']} replay={len(replay)}B")
 EOF

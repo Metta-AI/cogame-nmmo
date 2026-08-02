@@ -1,4 +1,4 @@
-# cogame-nmmo wire protocol
+# cogame-nmmo wire protocol (v2)
 
 The protocol a policy container speaks to play an episode, plus the
 spectator and replay surfaces. The observation and action *encodings* are
@@ -6,13 +6,10 @@ deliberately opaque here: they are the upstream PufferLib Ocean NMMO3
 encodings, transported verbatim (see "Observations" and "Actions" below
 for the upstream ground truth).
 
-> **Port status:** the sections below still describe the inherited
-> cogame-moba server (510-byte obs, 6-int actions, hero/team language).
-> Phase N2 rewrites this document for NMMO3: 1707-byte obs, single-int
-> 26-way actions (no-op `[4]`), a per-tick `"resets"` field (per-agent
-> done flags so recurrent policies can zero state on respawn), and
-> score-centric results. Until then, treat the NMMO3 facts in README.md
-> and `vendor/upstream/nmmo3.h` as ground truth.
+Protocol v2 = the inherited cogame-moba lockstep protocol plus the
+per-tick `resets` field (NMMO3 has per-agent partial episodes: agents
+die and respawn mid-episode, so recurrent policies need per-agent done
+flags every tick).
 
 ## Player websocket (`GET /player?slot=N&token=T`)
 
@@ -23,21 +20,30 @@ A player container receives its fully-formed connection URL in the
 JSON text message per tick each way:
 
 ```
-server -> player   {"tick": t, "obs": ["<base64>", ...]}   one base64 blob per hero
-player -> server   {"tick": t, "actions": [[a0..a5], ...]} one 6-int row per hero
+server -> player   {"tick": t, "obs": ["<base64>", ...], "resets": [bool, ...]}
+player -> server   {"tick": t, "actions": [[a], ...]}
 server -> player   {"done": true, "result": {...}}         episode end, then close
 ```
 
-- `obs` has one entry per hero this seat controls (1 in the default
-  variant, 5 in the team variant), each decoding to exactly 510 bytes.
+- `obs` has one entry per agent this seat controls (1 in the default
+  variant; `heroes_per_seat` in general), each decoding to exactly
+  **1707 bytes**. Agent order within a seat is ascending pid; seat `i`
+  controls pids `[i*h, (i+1)*h)` with `h = heroes_per_seat`.
+- `resets` is a parallel array of booleans, one per agent this seat
+  controls: `resets[j]` is true when that agent's terminal fired on the
+  **previous** sim step — it died (attack death) or hit the 500-tick
+  stagnation reset, and respawned in place. The obs delivered alongside
+  is the first observation of the agent's new life, so a recurrent
+  policy must zero that agent's hidden state *before* consuming this
+  tick's obs (exactly what upstream's demo `forward()` does with the
+  env's done flags). All false at tick 0. Non-recurrent policies may
+  ignore the field.
+- `actions` is one single-int row per agent (the 26-way discrete action,
+  see below): e.g. a 1-agent seat replies `{"tick": 5, "actions": [[17]]}`.
 - The reply must echo the same `tick`. Wrong-tick, malformed, late
   (past `tick_deadline_ms`), or missing replies play the no-op action
-  `[3, 3, 0, 0, 0, 0]` for that seat's heroes — the episode never stalls
-  and never crashes on bad input.
-- Hero order within a seat is ascending pid. Seat `i` controls pids
-  `[i*h, (i+1)*h)` with `h = heroes_per_seat`. Pids 0-4 are radiant,
-  5-9 dire; within each team the role order is support, assassin,
-  burst, tank, carry.
+  `[4]` for that seat's agents — the episode never stalls and never
+  crashes on bad input.
 - Strike rule: 10 consecutive no-op fallbacks mark a seat dead — the
   server stops waiting out the deadline for it, but keeps probing with
   each tick's obs; the first valid reply revives the seat. On the
@@ -52,30 +58,65 @@ server -> player   {"done": true, "result": {...}}         episode end, then clo
   reconnect then succeeds. A seat that disconnects may reconnect (any
   number of times) and resume at whatever tick the server sends next.
 
-## Observations (510 bytes per hero, opaque)
+## Observations (1707 bytes per agent, opaque)
 
 The exact byte layout produced by upstream `compute_observations` in
-`vendor/upstream/moba.h` (PufferAI/PufferLib @ `c5d3c637`): an 11x11
-map crop around the hero (121 x 4 bytes) plus scalar hero state. Policies
-trained on upstream Puffer MOBA consume these bytes unchanged — that is
-the point of this port. Decode guidance for hand-written policies:
-`players/scripted_player.py` documents the reliably-decodable fields.
+`vendor/upstream/nmmo3.h` (PufferAI/PufferLib @ `c5d3c637`): an 11x15
+egocentric tile window (11 rows x 15 cols x 10 bytes = 1650) + 47 self
+scalars + 10 reward-block bytes = 1707. Policies trained on upstream
+NMMO3 consume these bytes unchanged — that is the point of this port.
 
-## Actions (6 values per hero)
+Two trained-on quirks policy authors MUST know (never "fixed", because
+the pretrained net was trained on them):
 
-Upstream MultiDiscrete `[7, 7, 3, 2, 2, 2]`: `vel_y`, `vel_x` (0-6,
-center 3 = zero velocity), target filter (0-2), and three skill buttons
-(0/1). Values are truncated toward zero and clamped into range at the
-sim boundary, exactly like upstream's C cast.
+- **Byte 1706 is never written.** The reward block writes 9 of its 10
+  bytes; the last byte of every observation stays at whatever it held
+  before (0 forever, in practice). Do not read meaning into it.
+- **Stale entity bytes.** Bytes 4-9 of each tile cell (the entity
+  fields) are only written when an entity currently occupies that tile,
+  and the obs buffer is persistent and never cleared between ticks — a
+  tile an entity walked away from keeps the entity's old bytes until
+  another entity overwrites them. To know whether a tile's entity bytes
+  are *current*, a decoder must not trust them in isolation. The
+  upstream net was trained on exactly this residue.
+
+Further decode guidance (window strides, scalar offsets) arrives with
+the Phase-N3 scripted player, which derives its layout constants from
+the vendored `nmmo3.h` factors table.
+
+## Actions (1 value per agent)
+
+Upstream discrete space of 26 actions (`Discrete(26)`, delivered to the
+sim as one float cast to int per agent): movement, attacks, harvests,
+item use, buy/sell. Action id 4 is the semantic no-op (`ATN_NOOP`);
+several other ids are also semantic no-ops in most states. Values are
+truncated toward zero and clamped to 0..25 at the sim boundary, exactly
+like upstream's C cast — in-range integers pass through bit-exact.
 
 ## Global viewer (`GET /global`, `GET /client/global`)
 
 `/global` is a broadcast-only websocket: an initial
-`{"type": "status", ...}` snapshot on connect, throttled `{"tick": t}`
-progress messages while the episode runs, and the final
-`{"done": true, "result": {...}}`. `/client/global` serves a minimal
-HTML page over that feed. `GET /client/player?slot=N&token=T` serves a
-token-checked seat page (play happens over the websocket, not the page).
+`{"type": "status", ...}` snapshot on connect, throttled
+`{"tick": t, "scores": [...]}` progress messages while the episode runs
+(`scores` is the live per-seat standings, same ordering and semantics as
+the results field), and the final `{"done": true, "result": {...}}`.
+`/client/global` serves a minimal HTML page over that feed.
+`GET /client/player?slot=N&token=T` serves a token-checked seat page
+(play happens over the websocket, not the page).
+
+## Results
+
+`results.json` (closed key set, see the manifest `results_schema`):
+`names`, `scores` (raw per-seat score, higher = better — cumulative
+min(combat, profession) level over ended lives + the final life's min,
+summed over the seat's agents; there is no winner field), `reward_sums`,
+`end_reason` (`tick_cap` | `wall_clock` | `sim_fault`), `final_tick`,
+`seed`, `state_digest` (u32 sim digest at episode end; a re-sim of the
+replay reproduces it), `agent_stats` (per-agent score breakdown:
+`cum_min_comb_prof`, `deaths`, `comb_lvl`, `prof_lvl`, `gold`,
+`time_alive`), `noop_ticks`, `dead_seats`, `noop_causes`. A `sim_fault`
+episode scores every seat 0.0 (equal = drawn; an infra fault is
+nobody's loss).
 
 ## Runtime contract (Coworld)
 
@@ -94,14 +135,18 @@ tick_deadline_ms`) can far exceed the platform's
 replay. The engine therefore hard-stops a slow episode at
 `wall_clock_budget_seconds` (config; default `min(0.9 x
 episode_timeout_minutes x 60, max_ticks x tick_deadline_ms / 1000)`)
-with `end_reason: "wall_clock"`, the same Ancient-health tiebreak as
-`tick_cap`, and artifacts written normally.
+with `end_reason: "wall_clock"`, scores read as they stand, and
+artifacts written normally.
 
 ## Replay format (binary, v1)
 
-`MOBA` magic, u8 version, u32le header length, header JSON
+`NMMO` magic (a fresh identity — the moba `MOBA` layout is not a
+compatible ancestor), u8 version (= 1), u32le header length, header JSON
 (fully-resolved config incl. seed and player names, final result,
-tick_count, sim wasm sha256), then `tick_count * 60` bytes of packed
-post-clamp actions (10 heroes x 6 uint8 per tick). Seed + actions fully
-determine the episode; the viewer re-simulates it with the same wasm sim.
-Ground truth: `server/cogame_moba/replay.py`.
+tick_count, sim wasm sha256), then `tick_count * num_agents` bytes of
+packed post-clamp actions (one uint8 26-way action per agent per tick;
+`num_agents = len(players) x heroes_per_seat` from the header config).
+Seed + actions fully determine the episode: a fresh sim stepped through
+the recorded actions reproduces every obs/reward byte and the final
+`state_digest`; the Phase-N4 viewer re-simulates replays with the same
+wasm sim. Ground truth: `server/cogame_nmmo/replay.py`.
