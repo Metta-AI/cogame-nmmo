@@ -2,13 +2,14 @@
 
 Layout:
 
-    bytes 0-3   magic b"MOBA"
+    bytes 0-3   magic b"NMMO"
     byte  4     format version, u8 = 1
     bytes 5-8   header_len, u32 little-endian
     ...         header JSON, utf-8, header_len bytes
-    ...         body: tick_count * 60 bytes
-                (per tick: 10 heroes x 6 uint8 action values, post-clamp,
-                 exactly as fed to the sim)
+    ...         body: tick_count * num_agents bytes
+                (per tick: one uint8 26-way action per agent, post-clamp,
+                 exactly as fed to the sim; num_agents comes from the
+                 header config: len(players) x heroes_per_seat)
 
 Header JSON keys: format_version, sim_wasm_sha256, config (fully resolved
 game config incl. seed and player names — names MUST live in the replay
@@ -17,7 +18,8 @@ bytes per the Coworld static-viewer contract; tokens excluded), result
 
 A replay plus the pinned sim wasm fully determines the episode: re-run
 the sim from ``config.seed`` feeding each tick's actions and every obs/
-reward byte reproduces (see tests/test_replay.py re-simulation test).
+reward byte and the state digest reproduce (see tests/test_replay.py
+re-simulation test).
 """
 
 from __future__ import annotations
@@ -32,10 +34,11 @@ from . import defaults
 from .config import GameConfig
 from .sim import DEFAULT_WASM_PATH
 
-MAGIC = b"MOBA"
+MAGIC = b"NMMO"
 FORMAT_VERSION = 1
 _PREFIX_LEN = len(MAGIC) + 1 + 4  # magic + version u8 + header_len u32le
-BYTES_PER_TICK = defaults.NUM_HEROES * defaults.ACTIONS_PER_HERO  # 60
+# Highest valid action value (inclusive): ACT_HIGH is exclusive.
+_MAX_ACTION = defaults.ACT_HIGH[0] - 1
 
 
 class ReplayError(ValueError):
@@ -50,13 +53,15 @@ def sim_wasm_sha256(wasm_path: str | Path = DEFAULT_WASM_PATH) -> str:
 class ReplayWriter:
     """Accumulates per-tick actions; finalize() renders the full file.
 
-    Body is buffered in memory: episodes are at most 40000 ticks x 60 B
-    = 2.4 MB, so streaming to disk buys nothing.
+    Body is buffered in memory: episodes are at most max_ticks x
+    num_agents bytes (5000 x 8 = 40 kB at the defaults), so streaming to
+    disk buys nothing.
     """
 
     def __init__(self, config: GameConfig, sim_wasm_sha256: str):
         self._config = config
         self._sha = sim_wasm_sha256
+        self._num_agents = config.num_agents
         self._body = bytearray()
         self._tick_count = 0
 
@@ -65,19 +70,27 @@ class ReplayWriter:
         return self._tick_count
 
     def append_tick(self, tick: int, actions: np.ndarray) -> None:
-        """Record one tick's (10, 6) post-clamp action matrix.
+        """Record one tick's (num_agents, 1) post-clamp action matrix.
 
         Signature matches the engine's ``on_tick`` hook; ``tick`` must be
         the next sequential tick (catches skipped/duplicated ticks).
+        Values are range-checked (0..25): the engine only ever feeds
+        post-clamp actions, so an out-of-range value here is a bug, not
+        player input.
         """
         if tick != self._tick_count:
             raise ValueError(
                 f"non-sequential tick {tick}, expected {self._tick_count}")
         actions = np.asarray(actions)
-        if actions.shape != (defaults.NUM_HEROES, defaults.ACTIONS_PER_HERO):
+        if actions.shape != (self._num_agents, defaults.ACTIONS_PER_AGENT):
             raise ValueError(
-                f"actions must be ({defaults.NUM_HEROES}, "
-                f"{defaults.ACTIONS_PER_HERO}), got {actions.shape}")
+                f"actions must be ({self._num_agents}, "
+                f"{defaults.ACTIONS_PER_AGENT}), got {actions.shape}")
+        if actions.min() < 0 or actions.max() > _MAX_ACTION:
+            raise ValueError(
+                f"action values out of range 0..{_MAX_ACTION}: "
+                f"min {actions.min()}, max {actions.max()} "
+                f"(replays store post-clamp actions only)")
         self._body += actions.astype(np.uint8).tobytes()
         self._tick_count += 1
 
@@ -102,9 +115,10 @@ class ReplayWriter:
 class Replay:
     """Parsed replay: validated header + per-tick action access."""
 
-    def __init__(self, header: dict, body: bytes):
+    def __init__(self, header: dict, body: bytes, num_agents: int):
         self.header = header
         self._body = body
+        self.num_agents = num_agents
         self.tick_count = header["tick_count"]
 
     @classmethod
@@ -127,23 +141,44 @@ class Replay:
         if not isinstance(header, dict) or \
                 not isinstance(header.get("tick_count"), int):
             raise ReplayError("header missing integer tick_count")
+        num_agents = cls._header_num_agents(header)
         body = data[_PREFIX_LEN + header_len:]
-        expected = header["tick_count"] * BYTES_PER_TICK
+        expected = header["tick_count"] * num_agents
         if len(body) != expected:
             raise ReplayError(
                 f"body is {len(body)} bytes, expected {expected} "
-                f"({header['tick_count']} ticks x {BYTES_PER_TICK})")
-        return cls(header, body)
+                f"({header['tick_count']} ticks x {num_agents} agents)")
+        return cls(header, body, num_agents)
+
+    @staticmethod
+    def _header_num_agents(header: dict) -> int:
+        """num_agents from the header config (players x heroes_per_seat).
+
+        The body stride depends on it, so a header that can't produce a
+        positive agent count is malformed.
+        """
+        config = header.get("config")
+        if not isinstance(config, dict):
+            raise ReplayError("header missing config object")
+        players = config.get("players")
+        heroes = config.get("heroes_per_seat")
+        if not isinstance(players, list) or not players or \
+                not isinstance(heroes, int) or isinstance(heroes, bool) or \
+                heroes < 1:
+            raise ReplayError(
+                "header config must carry a non-empty players array and a "
+                "positive integer heroes_per_seat (they set the body stride)")
+        return len(players) * heroes
 
     def actions(self, tick: int) -> np.ndarray:
-        """The (10, 6) uint8 action matrix for one tick."""
+        """The (num_agents, 1) uint8 action matrix for one tick."""
         if not 0 <= tick < self.tick_count:
             raise IndexError(f"tick {tick} out of range 0..{self.tick_count - 1}")
-        start = tick * BYTES_PER_TICK
+        start = tick * self.num_agents
         return np.frombuffer(
             self._body, dtype=np.uint8,
-            count=BYTES_PER_TICK, offset=start,
-        ).reshape(defaults.NUM_HEROES, defaults.ACTIONS_PER_HERO)
+            count=self.num_agents, offset=start,
+        ).reshape(self.num_agents, defaults.ACTIONS_PER_AGENT)
 
     def __iter__(self):
         for tick in range(self.tick_count):

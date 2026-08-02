@@ -1,11 +1,3 @@
-# Inherited cogame-moba suite: exercises the moba-shaped modules this fork
-# has not adapted yet. Skipped (not deleted) pending Phase N2 (server adaptation),
-# which replaces it — see docs/plans/2026-08-02-cogame-nmmo-implementation.md.
-import pytest
-
-pytest.skip("moba-specific suite pending Phase N2 (server adaptation) rewrite",
-            allow_module_level=True)
-
 """Tests for the binary replay format v1: round-trip and re-simulation."""
 
 import json
@@ -21,10 +13,10 @@ from cogame_nmmo.replay import Replay, ReplayError, ReplayWriter
 NOOP = list(defaults.NOOP_ACTION)
 
 
-def make_config(**overrides):
+def make_config(num_seats=8, **overrides):
     d = {
-        "players": [{"name": f"hero-{i}"} for i in range(10)],
-        "tokens": [f"tok{i}" for i in range(10)],
+        "players": [{"name": f"agent-{i}"} for i in range(num_seats)],
+        "tokens": [f"tok{i}" for i in range(num_seats)],
         "seed": 77,
         "max_ticks": 120,
         "tick_deadline_ms": 2000,
@@ -33,9 +25,9 @@ def make_config(**overrides):
     return GameConfig.from_dict(d)
 
 
-def random_actions(rng, n_ticks):
+def random_actions(rng, n_ticks, num_agents=8):
     return [rng.integers(0, defaults.ACT_HIGH,
-                         size=(10, 6)).astype(np.uint8)
+                         size=(num_agents, 1)).astype(np.uint8)
             for _ in range(n_ticks)]
 
 
@@ -48,7 +40,7 @@ def test_round_trip():
     ticks = random_actions(rng, 25)
     for t, acts in enumerate(ticks):
         writer.append_tick(t, acts)
-    result = {"winner": 1, "end_reason": "ancient", "final_tick": 25}
+    result = {"scores": [3.0] * 8, "end_reason": "tick_cap", "final_tick": 25}
     data = writer.finalize(result)
 
     rp = Replay.parse(data)
@@ -57,14 +49,15 @@ def test_round_trip():
     assert rp.header["result"] == result
     assert rp.header["tick_count"] == 25
     assert rp.tick_count == 25
+    assert rp.num_agents == 8
     # config round-trips fully resolved, names included, tokens excluded
     assert rp.header["config"] == cfg.to_dict()
     assert [p["name"] for p in rp.header["config"]["players"]] == \
-        [f"hero-{i}" for i in range(10)]
+        [f"agent-{i}" for i in range(8)]
     assert "tokens" not in rp.header["config"]
     assert rp.header["config"]["seed"] == 77
     for t, acts in enumerate(rp):
-        assert acts.dtype == np.uint8 and acts.shape == (10, 6)
+        assert acts.dtype == np.uint8 and acts.shape == (8, 1)
         np.testing.assert_array_equal(acts, ticks[t])
     np.testing.assert_array_equal(rp.actions(10), ticks[10])
 
@@ -72,23 +65,33 @@ def test_round_trip():
 def test_binary_layout():
     cfg = make_config()
     writer = ReplayWriter(cfg, sim_wasm_sha256="cd" * 32)
-    writer.append_tick(0, np.zeros((10, 6), dtype=np.uint8))
+    writer.append_tick(0, np.zeros((8, 1), dtype=np.uint8))
     data = writer.finalize({})
-    assert data[:4] == b"MOBA"
+    assert data[:4] == b"NMMO"
     assert data[4] == 1  # version
     header_len = int.from_bytes(data[5:9], "little")
     header = json.loads(data[9:9 + header_len])
     assert header["tick_count"] == 1
     body = data[9 + header_len:]
-    assert len(body) == 60  # 10 heroes x 6 uint8 per tick
-    assert body == b"\x00" * 60
+    assert len(body) == 8  # 8 agents x 1 uint8 action per tick
+    assert body == b"\x00" * 8
+
+
+def test_multi_agent_seat_stride():
+    # 2 seats x 4 heroes: body stride is still num_agents = 8 bytes/tick
+    cfg = make_config(num_seats=2, heroes_per_seat=4)
+    writer = ReplayWriter(cfg, "aa" * 32)
+    writer.append_tick(0, np.arange(8, dtype=np.uint8).reshape(8, 1))
+    rp = Replay.parse(writer.finalize({}))
+    assert rp.num_agents == 8
+    assert rp.actions(0).flatten().tolist() == list(range(8))
 
 
 # -- validation --------------------------------------------------------------
 
 def test_bad_magic_rejected():
     with pytest.raises(ReplayError):
-        Replay.parse(b"NOPE" + b"\x01" + b"\x00" * 20)
+        Replay.parse(b"MOBA" + b"\x01" + b"\x00" * 20)
 
 
 def test_bad_version_rejected():
@@ -102,28 +105,50 @@ def test_bad_version_rejected():
 def test_truncated_body_rejected():
     cfg = make_config()
     writer = ReplayWriter(cfg, "ee" * 32)
-    writer.append_tick(0, np.ones((10, 6), dtype=np.uint8))
+    writer.append_tick(0, np.ones((8, 1), dtype=np.uint8))
     data = writer.finalize({})
     with pytest.raises(ReplayError):
-        Replay.parse(data[:-10])
+        Replay.parse(data[:-3])
 
 
 def test_truncated_header_rejected():
     with pytest.raises(ReplayError):
-        Replay.parse(b"MOBA\x01\xff\xff\xff\x00rest")
+        Replay.parse(b"NMMO\x01\xff\xff\xff\x00rest")
+
+
+def test_header_without_agent_topology_rejected():
+    # the body stride comes from the header config; a header without it
+    # is unusable even if tick_count parses
+    header = json.dumps({"tick_count": 0, "config": {}}).encode()
+    data = b"NMMO\x01" + len(header).to_bytes(4, "little") + header
+    with pytest.raises(ReplayError):
+        Replay.parse(data)
 
 
 def test_writer_rejects_non_sequential_tick():
     writer = ReplayWriter(make_config(), "ee" * 32)
-    writer.append_tick(0, np.zeros((10, 6), dtype=np.uint8))
+    writer.append_tick(0, np.zeros((8, 1), dtype=np.uint8))
     with pytest.raises(ValueError):
-        writer.append_tick(2, np.zeros((10, 6), dtype=np.uint8))
+        writer.append_tick(2, np.zeros((8, 1), dtype=np.uint8))
 
 
 def test_writer_rejects_bad_tick_shape():
     writer = ReplayWriter(make_config(), "ee" * 32)
     with pytest.raises(ValueError):
-        writer.append_tick(0, np.zeros((5, 6), dtype=np.uint8))
+        writer.append_tick(0, np.zeros((5, 1), dtype=np.uint8))
+
+
+def test_writer_rejects_out_of_range_actions():
+    # replays store post-clamp actions only: 26+ or negative is a bug
+    writer = ReplayWriter(make_config(), "ee" * 32)
+    bad = np.zeros((8, 1), dtype=np.int16)
+    bad[3, 0] = 26
+    with pytest.raises(ValueError, match="out of range"):
+        writer.append_tick(0, bad)
+    bad[3, 0] = -1
+    with pytest.raises(ValueError, match="out of range"):
+        writer.append_tick(0, bad)
+    writer.append_tick(0, np.full((8, 1), 25, dtype=np.uint8))  # max is fine
 
 
 def test_sim_wasm_sha256_matches_file(tmp_path):
@@ -139,38 +164,40 @@ def test_sim_wasm_sha256_matches_file(tmp_path):
 async def test_recorded_episode_resimulates_identically():
     """Record a real wasm episode via the engine hook, then re-run a fresh
     sim from the replay's seed feeding the replay's actions: same final
-    tick, winner, and final obs bytes."""
-    from cogame_nmmo.sim import MobaSim
+    tick, final obs bytes, and state digest."""
+    from cogame_nmmo.sim import NmmoSim
 
     class RngSource:
         def __init__(self, seat):
             self.rng = np.random.default_rng(1000 + seat)
 
-        async def get_actions(self, tick, obs):
+        async def get_actions(self, tick, obs, resets):
             return self.rng.integers(
-                0, defaults.ACT_HIGH, size=(1, 6)).tolist()
+                0, defaults.ACT_HIGH, size=(1, 1)).tolist()
 
     cfg = make_config(max_ticks=120)
-    sim = MobaSim(seed=cfg.seed)
+    sim = NmmoSim(seed=cfg.seed, num_agents=cfg.num_agents)
     writer = ReplayWriter(cfg, replay.sim_wasm_sha256())
     engine = LockstepEngine(
-        sim, cfg, [RngSource(s) for s in range(10)],
+        sim, cfg, [RngSource(s) for s in range(8)],
         on_tick=writer.append_tick)
     result = await engine.run()
     data = writer.finalize({
-        "winner": result.winner,
+        "scores": list(result.seat_scores),
         "end_reason": result.end_reason,
         "final_tick": result.final_tick,
     })
     recorded_obs = sim.observations().tobytes()
+    recorded_digest = sim.state_digest()
+    assert result.state_digest == recorded_digest
 
     rp = Replay.parse(data)
     assert rp.tick_count == result.final_tick
-    resim = MobaSim(seed=rp.header["config"]["seed"])
+    resim = NmmoSim(seed=rp.header["config"]["seed"],
+                    num_agents=rp.num_agents)
     for acts in rp:
         resim.set_actions(acts.astype(np.float32))
         resim.step()
     assert resim.tick() == result.final_tick
-    assert resim.done() == sim.done()
-    assert resim.winner() == sim.winner()
     assert resim.observations().tobytes() == recorded_obs
+    assert resim.state_digest() == recorded_digest
