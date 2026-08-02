@@ -1,15 +1,29 @@
 """Transport-free lockstep episode engine.
 
-Runs one MOBA episode against per-seat async action sources. Per tick:
+Runs one NMMO3 episode against per-seat async action sources. Per tick:
 slice per-seat observations, gather every seat's actions concurrently
 under the config tick deadline, NOOP-fill anything missing/late/
 malformed, feed the sim, step, accumulate rewards. A seat can never
 crash the episode: any exception, timeout, or bad payload from a source
-degrades to the no-op action for that seat's heroes.
+degrades to the no-op action for that seat's agents.
+
+Each ``get_actions`` call also carries per-agent ``resets`` flags: True
+when that agent's terminal fired on the previous sim step (attack death
+or 500-tick stagnation reset, respawn in place) — i.e. the obs delivered
+alongside is the first of a new life, and recurrent policies must zero
+that agent's state (protocol v2 ``resets``; see docs/PROTOCOL.md).
 
 The optional ``on_tick(tick, actions)`` callback receives the post-clamp
-(10, 6) uint8 action matrix exactly as fed to the sim — the replay
-writer hooks here.
+(num_agents, 1) uint8 action matrix exactly as fed to the sim — the
+replay writer hooks here.
+
+Scoring: NMMO3 has no env termination — episodes end at the tick cap
+(or the wall-clock budget / a sim fault). Seats are ranked by score:
+per-agent cumulative min(comb_lvl, prof_lvl) over ended lives plus the
+current life's min (sim/shim.c ``nmmo_score``), summed over a seat's
+agents. The shim's cumulative accessors are stateful, so the engine
+reads scores ONCE at episode end (a live standings feed can read
+``sim.score`` any time; the server's /global broadcast does).
 
 Strike rule (bounds worst-case wall clock): a seat that fails to deliver
 a valid action for ``STRIKE_LIMIT`` consecutive ticks is marked dead —
@@ -36,17 +50,22 @@ import numpy as np
 from . import defaults
 from .config import GameConfig
 
-# agent_stat `which` codes, mirroring sim/shim.c agent_stat()
-STAT_NAMES = (
-    "level", "kills", "deaths", "towers_killed", "creeps_killed",
-    "neutrals_killed", "xp", "damage_dealt", "damage_received",
-    "healing_dealt", "healing_received",
-)
+# results agent_stats keys -> sim agent_stat() `which` codes. Mirrors
+# sim/shim.c (duplicated so transport code needs no wasmtime import;
+# tested equal to cogame_nmmo.sim.STAT_* in tests/test_engine.py).
+STAT_CODES = {
+    "cum_min_comb_prof": 0,   # sum of min(comb,prof) over ended lives
+    "deaths": 1,              # ended lives (attack + stagnation)
+    "comb_lvl": 2,            # final life's combat level
+    "prof_lvl": 3,            # final life's profession level
+    "gold": 5,
+    "time_alive": 6,          # ticks since the final life spawned
+}
 
 # Closed enum (triple-sync rule): these values must match the manifest
 # results_schema end_reason enum and any docker_smoke.sh expectations.
-EndReason = Literal["ancient", "tick_cap", "wall_clock", "sim_fault"]
-END_REASON_ANCIENT: EndReason = "ancient"
+# NMMO3 has no env-side termination, so there is no "won" end state.
+EndReason = Literal["tick_cap", "wall_clock", "sim_fault"]
 END_REASON_TICK_CAP: EndReason = "tick_cap"
 END_REASON_WALL_CLOCK: EndReason = "wall_clock"
 END_REASON_SIM_FAULT: EndReason = "sim_fault"
@@ -76,26 +95,27 @@ class ActionSource(Protocol):
     """Per-seat action provider (websocket seat, scripted bot, ...)."""
 
     async def get_actions(
-            self, tick: int, obs: np.ndarray
+            self, tick: int, obs: np.ndarray, resets: Sequence[bool]
     ) -> Sequence[Sequence[int]] | None:
-        """Actions for this seat's heroes at ``tick``.
+        """Actions for this seat's agents at ``tick``.
 
-        ``obs`` is the (heroes_per_seat, 510) uint8 slice for this seat's
-        heroes in pid order. Returns a (heroes_per_seat, 6)-shaped nested
-        sequence of action values, or None to play NOOP this tick.
+        ``obs`` is the (heroes_per_seat, 1707) uint8 slice for this
+        seat's agents in pid order; ``resets`` is the matching per-agent
+        list of done flags from the previous step (all False at tick 0).
+        Returns a (heroes_per_seat, 1)-shaped nested sequence of action
+        values, or None to play NOOP this tick.
         """
         ...
 
 
 @dataclass(frozen=True)
 class EpisodeResult:
-    winner: int | None            # 0 radiant, 1 dire, None draw
     end_reason: EndReason
-    seat_scores: tuple[float, ...]        # win 1 / draw 0.5 / loss 0
+    seat_scores: tuple[float, ...]        # final score per seat, higher=better
     seat_reward_sums: tuple[float, ...]   # sim reward sums per seat
-    agent_stats: tuple[dict, ...]         # 10 dicts keyed by STAT_NAMES
+    agent_stats: tuple[dict, ...]         # num_agents dicts keyed by STAT_CODES
     final_tick: int
-    ancient_healths: tuple[float, float]  # (radiant, dire) at episode end
+    state_digest: int                     # sim state digest at episode end
     seat_noop_ticks: tuple[int, ...]      # ticks each seat played NOOP fallback
     seat_dead: tuple[bool, ...]           # strike-rule dead flag at episode end
     seat_noop_causes: tuple[dict, ...]    # per-seat counts keyed by NOOP_CAUSES
@@ -123,7 +143,7 @@ class LockstepEngine:
         # the close and reconnects instead of feeding a black hole.
         self._on_seat_dead = on_seat_dead
         # per-seat pid slices, bound once (obs, actions and rewards all
-        # index heroes by pid rows)
+        # index agents by pid rows)
         self._seat_slices = [
             slice(pids.start, pids.stop)
             for pids in (defaults.seat_hero_pids(s, config.heroes_per_seat)
@@ -135,13 +155,16 @@ class LockstepEngine:
         self._host_error_logged = [False] * config.num_seats
         self._probes: list[asyncio.Task | None] = [None] * config.num_seats
         self._wall_clock_expired = False
-        # Patch-0004 containment: set when the sim reports a fault flag
+        # Patch-0002 containment: set when the sim reports a fault flag
         # or a sim call raises (wasmtime trap). The episode then ends
         # with end_reason "sim_fault" and best-effort result fields, so
         # results and the partial replay still get written.
         self._sim_fault = False
         self._ticks_run = 0
         self._progress_interval = progress_interval_seconds
+        # Previous step's per-agent done flags: the protocol v2 `resets`
+        # delivered with the NEXT tick's obs (all False at tick 0).
+        self._last_dones = [False] * config.num_agents
 
     async def run(self) -> EpisodeResult:
         sim = self._sim
@@ -163,15 +186,6 @@ class LockstepEngine:
                           f"{cfg.max_ticks}, elapsed {now - start:.0f}s, "
                           f"noops={self._noop_ticks}, "
                           f"strikes={self._strikes}", file=sys.stderr)
-                # Sim calls are containment boundaries (patch 0004): a
-                # wasmtime trap or a raised fault flag ends the episode
-                # as "sim_fault" instead of crashing the process.
-                try:
-                    if sim.done():
-                        break
-                except Exception:
-                    self._sim_fault = True
-                    break
                 if self._ticks_run >= cfg.max_ticks:
                     break
                 if time.monotonic() - start >= cfg.wall_clock_budget_seconds:
@@ -180,6 +194,9 @@ class LockstepEngine:
                     # results and the partial replay still get written.
                     self._wall_clock_expired = True
                     break
+                # Sim calls are containment boundaries (patch 0002): a
+                # wasmtime trap or a raised fault flag ends the episode
+                # as "sim_fault" instead of crashing the process.
                 try:
                     tick = sim.tick()
                     obs = sim.observations()
@@ -197,7 +214,8 @@ class LockstepEngine:
                     await asyncio.sleep(0)
                 gathered = await asyncio.gather(*(
                     self._seat_actions(
-                        s, tick, obs[self._seat_slices[s]], deadline)
+                        s, tick, obs[self._seat_slices[s]],
+                        self._seat_resets(s), deadline)
                     for s in live))
                 replies: list = [(None, "timeout")] * cfg.num_seats
                 for s, reply_cause in zip(live, gathered):
@@ -205,9 +223,10 @@ class LockstepEngine:
                 for s in range(cfg.num_seats):
                     if self._strikes[s] >= self._strike_limit:
                         replies[s] = self._poll_dead_seat(
-                            s, tick, obs[self._seat_slices[s]])
+                            s, tick, obs[self._seat_slices[s]],
+                            self._seat_resets(s))
 
-                actions = np.tile(noop_row, (defaults.NUM_HEROES, 1))
+                actions = np.tile(noop_row, (cfg.num_agents, 1))
                 for seat, (reply, cause) in enumerate(replies):
                     sanitized = _sanitize(reply, h)
                     if sanitized is not None:
@@ -255,6 +274,7 @@ class LockstepEngine:
 
                 try:
                     rewards = np.asarray(sim.rewards(), dtype=np.float64)
+                    self._last_dones = list(sim.dones())
                 except Exception:
                     self._sim_fault = True
                     break
@@ -286,7 +306,13 @@ class LockstepEngine:
 
         return self._build_result(reward_sums)
 
-    def _poll_dead_seat(self, seat: int, tick: int, seat_obs: np.ndarray):
+    def _seat_resets(self, seat: int) -> list[bool]:
+        """One seat's slice of the previous step's done flags."""
+        s = self._seat_slices[seat]
+        return self._last_dones[s.start:s.stop]
+
+    def _poll_dead_seat(self, seat: int, tick: int, seat_obs: np.ndarray,
+                        seat_resets: list[bool]):
         """Non-blocking revival path for a dead seat.
 
         Harvests the previous background probe if it finished (its reply,
@@ -308,18 +334,19 @@ class LockstepEngine:
             # immediately cancelled by run()'s valid-action handling —
             # intentional: creation here keeps this path branch-free.
             self._probes[seat] = asyncio.create_task(
-                self._probe_seat(seat, tick, seat_obs))
+                self._probe_seat(seat, tick, seat_obs, seat_resets))
         return reply_cause
 
     async def _probe_seat(self, seat: int, tick: int,
-                          seat_obs: np.ndarray):
+                          seat_obs: np.ndarray, seat_resets: list[bool]):
         """Un-deadlined get_actions for revival probes.
 
         Returns ``(reply, cause)`` like _seat_actions; never raises
         (except cancellation).
         """
         try:
-            reply = await self._sources[seat].get_actions(tick, seat_obs)
+            reply = await self._sources[seat].get_actions(
+                tick, seat_obs, seat_resets)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -330,7 +357,8 @@ class LockstepEngine:
         return reply, None
 
     async def _seat_actions(self, seat: int, tick: int,
-                            seat_obs: np.ndarray, deadline: float):
+                            seat_obs: np.ndarray, seat_resets: list[bool],
+                            deadline: float):
         """One seat's ``(reply, cause)``; degrade, never crash.
 
         ``cause`` (a NOOP_CAUSES key) is set when reply is None; the run
@@ -339,7 +367,8 @@ class LockstepEngine:
         """
         try:
             reply = await asyncio.wait_for(
-                self._sources[seat].get_actions(tick, seat_obs), deadline)
+                self._sources[seat].get_actions(tick, seat_obs, seat_resets),
+                deadline)
         except asyncio.TimeoutError:
             return None, "timeout"
         except asyncio.CancelledError:
@@ -362,6 +391,12 @@ class LockstepEngine:
               f"further errors from this seat are counted, not logged)",
               file=sys.stderr)
 
+    def _seat_score(self, seat: int) -> float:
+        """A seat's final score: sim.score summed over its agents."""
+        s = self._seat_slices[seat]
+        return float(sum(self._sim.score(pid)
+                         for pid in range(s.start, s.stop)))
+
     def _build_result(self, reward_sums: np.ndarray) -> EpisodeResult:
         sim = self._sim
         cfg = self._config
@@ -369,45 +404,22 @@ class LockstepEngine:
         if self._sim_fault:
             return self._build_fault_result(reward_sums)
 
-        ancient_healths = (float(sim.ancient_health(0)),
-                           float(sim.ancient_health(1)))
-
-        if sim.done():
-            end_reason = END_REASON_ANCIENT
-            winner: int | None = int(sim.winner())
-        else:
-            # tick_cap and wall_clock share the ancient-health tiebreak
-            end_reason = END_REASON_WALL_CLOCK if self._wall_clock_expired \
-                else END_REASON_TICK_CAP
-            radiant, dire = ancient_healths
-            if radiant > dire:
-                winner = 0
-            elif dire > radiant:
-                winner = 1
-            else:
-                winner = None
-
-        scores = []
-        for seat in range(cfg.num_seats):
-            if winner is None:
-                scores.append(0.5)
-            else:
-                team = defaults.team_for_seat(seat, cfg.heroes_per_seat)
-                scores.append(1.0 if team == winner else 0.0)
+        end_reason = END_REASON_WALL_CLOCK if self._wall_clock_expired \
+            else END_REASON_TICK_CAP
 
         agent_stats = tuple(
             {name: int(sim.agent_stat(pid, which))
-             for which, name in enumerate(STAT_NAMES)}
-            for pid in range(defaults.NUM_HEROES))
+             for name, which in STAT_CODES.items()}
+            for pid in range(cfg.num_agents))
 
         return EpisodeResult(
-            winner=winner,
             end_reason=end_reason,
-            seat_scores=tuple(scores),
+            seat_scores=tuple(self._seat_score(s)
+                              for s in range(cfg.num_seats)),
             seat_reward_sums=tuple(float(r) for r in reward_sums),
             agent_stats=agent_stats,
             final_tick=int(sim.tick()),
-            ancient_healths=ancient_healths,
+            state_digest=int(sim.state_digest()),
             seat_noop_ticks=tuple(self._noop_ticks),
             seat_dead=tuple(
                 s >= self._strike_limit for s in self._strikes),
@@ -428,10 +440,10 @@ class LockstepEngine:
 
     def _build_fault_result(self, reward_sums: np.ndarray) -> EpisodeResult:
         """Best-effort result for a sim fault: end_reason "sim_fault",
-        no winner, draw scores (an infra fault is nobody's loss). Sim
-        reads fall back to zeros — a trapped wasm instance raises on
-        every access, but a fault-flag episode (patch 0004) usually has
-        readable state.
+        all scores 0.0 (equal, i.e. a draw for ranking consumers — an
+        infra fault is nobody's loss). Sim reads fall back to zeros — a
+        trapped wasm instance raises on every access, but a fault-flag
+        episode (patch 0002) usually has readable state.
         """
         sim = self._sim
         cfg = self._config
@@ -444,18 +456,15 @@ class LockstepEngine:
 
         agent_stats = tuple(
             {name: int(safe(lambda p=pid, w=which: sim.agent_stat(p, w), 0))
-             for which, name in enumerate(STAT_NAMES)}
-            for pid in range(defaults.NUM_HEROES))
+             for name, which in STAT_CODES.items()}
+            for pid in range(cfg.num_agents))
         return EpisodeResult(
-            winner=None,
             end_reason=END_REASON_SIM_FAULT,
-            seat_scores=tuple([0.5] * cfg.num_seats),
+            seat_scores=tuple([0.0] * cfg.num_seats),
             seat_reward_sums=tuple(float(r) for r in reward_sums),
             agent_stats=agent_stats,
             final_tick=int(safe(sim.tick, self._ticks_run)),
-            ancient_healths=(
-                float(safe(lambda: sim.ancient_health(0), 0.0)),
-                float(safe(lambda: sim.ancient_health(1), 0.0))),
+            state_digest=int(safe(sim.state_digest, 0)),
             seat_noop_ticks=tuple(self._noop_ticks),
             seat_dead=tuple(
                 s >= self._strike_limit for s in self._strikes),
@@ -464,14 +473,14 @@ class LockstepEngine:
 
 
 def _sanitize(reply, heroes_per_seat: int) -> np.ndarray | None:
-    """Validate one seat's reply into (h, 6) uint8, or None if malformed."""
+    """Validate one seat's reply into (h, 1) uint8, or None if malformed."""
     if reply is None:
         return None
     try:
         arr = np.asarray(reply, dtype=np.float64)
     except (TypeError, ValueError):
         return None
-    if arr.shape != (heroes_per_seat, defaults.ACTIONS_PER_HERO):
+    if arr.shape != (heroes_per_seat, defaults.ACTIONS_PER_AGENT):
         return None
     if not np.isfinite(arr).all():
         return None
