@@ -236,37 +236,21 @@ def run_baseline_vs_random_episode():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=False,
-    reason="N2 scoring-design finding (2026-08-02): the CURRENT ranking "
-    "score is CUMULATIVE min(comb,prof) over ended lives, so every death "
-    "banks at least 1 — and random dies to enemies ~every 50 ticks "
-    "(measured seed 11 / 2000 ticks: random scores 44/38/33/30 with "
-    "43/37/32/29 deaths; baseline 28/11/25/12 with 3/1/2/1 deaths, banking "
-    "~9-14 per life). Death-count farming (~0.02/tick) outpaces coherent "
-    "leveling, so this direction assertion fails for METRIC reasons, not "
-    "port reasons. Owner decision (2026-08-02): rank by mean score per "
-    "life, score/(deaths+1), engine-side — being implemented in the N2 "
-    "server lane. FLIP THIS TO A HARD ASSERT (and drop the xfail) once "
-    "that scoring commit lands; the per-life companion test below already "
-    "asserts the post-fix ordering.")
-def test_baseline_scores_at_least_random_raw_cumulative():
-    """Intended N3 gate on the CURRENT (cumulative) ranking score; see
-    the xfail reason for why the metric inverts it today and what
-    replaces it."""
-    stats = run_baseline_vs_random_episode()
-    assert np.mean(stats["baseline"]["scores"]) >= \
-        np.mean(stats["random"]["scores"]), stats
+def test_baseline_beats_random_on_ranking_score():
+    """The N3 behavioral gate, on the RANKING metric: mean score per
+    life, sim.score/(deaths+1) — exactly engine._seat_score since the
+    mean-per-life scoring change (commit 8410305). Per life, the
+    pretrained net banks several levels of min(comb,prof) — it equips,
+    harvests, and fights coherently — while random stays pinned at ~1
+    (it can level essentially only by accident). Measured seed 11:
+    baseline per-life ~5.5-8.3 (mean ~6.7), random exactly 1.0.
 
-
-@pytest.mark.slow
-def test_baseline_outlevels_random_per_life():
-    """Metric-independent behavioral gate (and the ordering under the
-    decided mean-per-life ranking score): per life, the pretrained net
-    banks several levels of min(comb,prof) — it equips, harvests, and
-    fights coherently — while random stays pinned at ~1 (it can level
-    essentially only by accident). Measured seed 11: baseline per-life
-    ~7-14, random ~1.
+    History pinned here on purpose: under the ORIGINAL cumulative score
+    this ordering was INVERTED — random out-scored the trained net by
+    dying every ~50 ticks (43/37/32/29 deaths banking min=1 each vs
+    baseline's 28/11/25/12 raw with 1-3 deaths), the measured
+    suicide-farming exploit that motivated the metric change. The raw
+    cumulative numbers stay in the printed report for that reason.
 
     Toolchain-drift note: if these numbers shift right after an
     emcc/emsdk bump, suspect a musl rand()/libm stream change shifting
@@ -277,5 +261,5 @@ def test_baseline_outlevels_random_per_life():
     random_pl = stats["random"]["per_life"]
     assert np.mean(baseline_pl) > np.mean(random_pl), stats
     # not a squeaker: the trained net's per-life banking is a multiple of
-    # random's floor (measured ~7-14 vs ~1; assert a conservative 2x)
+    # random's floor (measured ~6.7 vs 1.0; assert a conservative 2x)
     assert np.mean(baseline_pl) >= 2 * np.mean(random_pl), stats
