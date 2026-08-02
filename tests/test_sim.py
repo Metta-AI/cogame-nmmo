@@ -243,3 +243,12 @@ def test_initial_obs_differs_across_seeds():
     # world gen consumes env.rng in c_reset: different seed, different world
     assert NmmoSim(seed=1).observations().tobytes() \
         != NmmoSim(seed=2).observations().tobytes()
+
+
+def test_obs_size_export_matches_host_constant():
+    # obs_size() (sim/shim.c) is the wasm's own statement of the per-agent
+    # obs stride; __init__ hard-fails on mismatch, so reaching this line
+    # after an instantiation already proves agreement — assert the export
+    # value directly anyway for a loud, named failure.
+    sim = NmmoSim(seed=7)
+    assert sim._exports["obs_size"](sim._store) == OBS_SIZE == 1707

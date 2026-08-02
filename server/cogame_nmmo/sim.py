@@ -18,12 +18,10 @@ PRISTINE_WASM_PATH = REPO_ROOT / "build" / "nmmo3_sim_pristine.wasm"
 
 NUM_AGENTS = 8   # default seat count (num_agents is elastic upstream)
 # 11x15 tile window x 10 bytes + 47 self scalars + 10 reward bytes
-# (opaque contract; allocation site nmmo3.h:797). The shim exports no
-# obs-stride accessor, so this constant cannot be cross-checked against
-# the wasm without a shim change; the obs-contract snapshot test
-# (tests/test_obs_contract.py) would catch a stride drift as a digest
-# mismatch. TODO(N3): export an obs_size() from the shim when it is next
-# rebuilt for the brain work, and assert equality here at module init.
+# (opaque contract; allocation site nmmo3.h:797). Cross-checked against
+# the shim's obs_size() export at every instantiation (assert in
+# __init__), so a window/layout drift after a vendor bump fails loudly
+# instead of silently misreading the obs buffer.
 OBS_SIZE = 11 * 15 * 10 + 47 + 10  # = 1707
 NUM_ATNS = 1     # one 26-way discrete action, delivered as 1 float
 
@@ -95,6 +93,13 @@ class NmmoSim:
         if seed >= 1 << 31:
             seed -= 1 << 32
         self._exports["nmmo_init"](self._store, seed, num_agents)
+
+        wasm_obs_size = self._exports["obs_size"](self._store)
+        if wasm_obs_size != OBS_SIZE:
+            raise RuntimeError(
+                f"sim wasm obs_size() is {wasm_obs_size}, host expects "
+                f"{OBS_SIZE} - vendored obs layout drifted; rebuild or "
+                f"re-pin (sim/shim_common.h NMMO_OBS_SIZE)")
 
         self._obs_ptr = self._exports["obs_ptr"](self._store)
         self._act_ptr = self._exports["act_ptr"](self._store)

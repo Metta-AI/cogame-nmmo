@@ -130,6 +130,13 @@ int nmmo_fault(void) {
 #endif
 }
 
+// Per-agent observation stride in bytes (NMMO_OBS_SIZE, shim_common.h).
+// The host asserts its own OBS_SIZE constant against this at init so a
+// window/layout drift after a vendor bump fails loudly instead of
+// silently misreading the obs buffer.
+__attribute__((export_name("obs_size")))
+int obs_size(void) { return NMMO_OBS_SIZE; }
+
 __attribute__((export_name("obs_ptr")))
 unsigned char* obs_ptr(void) { return env.observations; }
 
