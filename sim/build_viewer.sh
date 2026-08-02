@@ -2,7 +2,7 @@
 # Build the replay viewer from sim/viewer_main.c (patched tree):
 #
 #   viewer/dist/nmmo3_viewer.{js,wasm,data} + index.html   (browser bundle,
-#       -DNMMO3_RENDER, raylib web, preloaded vendor render assets)
+#       -DNMMO3_RENDER, raylib web, preloaded staged render assets)
 #   build/viewer_core.{js,wasm}                           (headless core,
 #       no raylib, ENVIRONMENT=node — tests/test_viewer.py re-sim check)
 #
@@ -10,12 +10,14 @@
 # (raylib-5.5_webassembly.zip), fetched once into build/raylib-web/ and
 # cached; sha256-verified. See vendor/UPSTREAM.md "Build-time dependency".
 #
-# Memory flags match sim/build_sim.sh rationale: the sim's ai_paths BFS
-# cache is a 256 MB calloc (and viewer_seek re-allocates it); grow to
-# 1 GB, abort loudly on OOM instead of NULL-write corruption.
-# NOTE (Phase N4 pending): sim/viewer_main.c is still the moba viewer;
-# Phase N4 rewrites it for the nmmo3 renderer (-DNMMO3_RENDER). Until
-# then this script fails at the compile step.
+# Memory flags match sim/build_sim.sh rationale: grow to 1 GB, abort
+# loudly on OOM instead of NULL-write corruption.
+#
+# Assets: the ~14 MB of render assets make_client loads (nmmo3.h:
+# 2456-2531) are STAGED into build/viewer-assets/ by explicit list and
+# preloaded from there — never the raw vendor resources dir, which also
+# holds nmmo3_weights.bin (17.7 MB of policy weights the renderer never
+# reads; shipping them would more than double the bundle).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -53,7 +55,39 @@ if [ ! -f "$RAYLIB_DIR/lib/libraylib.a" ] || \
     trap - EXIT
 fi
 
-VIEWER_EXPORTS=_viewer_load,_viewer_seek,_viewer_advance_frame,_viewer_tick,_viewer_total_ticks,_viewer_set_speed,_viewer_get_speed,_viewer_set_playing,_viewer_playing,_viewer_done,_viewer_winner,_viewer_state_digest,_malloc,_free
+# -- stage render assets (weights EXCLUDED) ----------------------------------
+# Exactly what make_client() loads on the web (nmmo3.h:2456-2531), plus
+# the assets license. GLSL 330 is desktop-only; the web build resolves
+# map_shader_100.fs (GLSL_VERSION 100 without PLATFORM_DESKTOP).
+# ManaSeedBody.ttf is intentionally absent upstream (raylib falls back to
+# its default font) — do not add it. A missing listed file is a hard
+# error: a silently thinner .data would die at runtime asset load.
+ASSETS_SRC=vendor/upstream/resources/nmmo3
+ASSETS_DIR=build/viewer-assets
+rm -rf "$ASSETS_DIR"
+mkdir -p "$ASSETS_DIR/resources/nmmo3"
+VIEWER_ASSETS=(
+    map_shader_100.fs
+    merged_sheet.png
+    items_condensed.png
+    inventory_64.png
+    inventory_64_selected.png
+    inventory_64_press.png
+    ASSETS_LICENSE.md
+)
+for element in neutral fire water earth air; do
+    for i in 0 1 2 3 4 5 6 7 8 9; do
+        VIEWER_ASSETS+=("${element}_${i}.png")
+    done
+done
+for f in "${VIEWER_ASSETS[@]}"; do
+    cp "$ASSETS_SRC/$f" "$ASSETS_DIR/resources/nmmo3/$f"
+done
+
+VIEWER_EXPORTS=_viewer_load,_viewer_seek,_viewer_advance,_viewer_advance_frame,_viewer_render_phase,_viewer_tick,_viewer_total_ticks,_viewer_set_speed,_viewer_get_speed,_viewer_set_playing,_viewer_playing,_viewer_state_digest,_malloc,_free
+# Camera-follow controls exist only in the render build (they poke the
+# raylib client); the headless core has no client to follow with.
+RENDER_EXPORTS=_main,_viewer_set_follow,_viewer_get_follow,$VIEWER_EXPORTS
 
 MEM_FLAGS=(-sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=1gb -sABORTING_MALLOC=1
            -sINITIAL_MEMORY=512MB -sSTACK_SIZE=512KB)
@@ -66,11 +100,25 @@ emcc -O2 -DNMMO3_RENDER -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
     -sUSE_GLFW=3 -sUSE_WEBGL2=1 \
     "${MEM_FLAGS[@]}" \
     -sENVIRONMENT=web \
-    -sEXPORTED_FUNCTIONS="_main,$VIEWER_EXPORTS" \
+    -sEXPORTED_FUNCTIONS="$RENDER_EXPORTS" \
     -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8 \
-    --preload-file vendor/upstream/resources@resources \
+    --preload-file "$ASSETS_DIR/resources@resources" \
     -o viewer/dist/nmmo3_viewer.js
 cp viewer/index.html viewer/dist/index.html
+
+# Embed the sha of the sim wasm this viewer was built alongside (index
+# warns on screen when a replay header's sim_wasm_sha256 differs). The
+# build order (build_sim.sh before build_viewer.sh, as in Dockerfile and
+# CI) makes build/nmmo3_sim.wasm the matching sim; absent (viewer-only
+# dev build), the warning is simply disabled.
+if [ -f build/nmmo3_sim.wasm ]; then
+    sim_sha="$(shasum -a 256 build/nmmo3_sim.wasm | cut -d' ' -f1)"
+    printf 'window.SIM_WASM_SHA256 = "%s";\n' "$sim_sha" \
+        > viewer/dist/sim_sha.js
+else
+    echo "build/nmmo3_sim.wasm absent: sim-sha mismatch warning disabled" >&2
+    printf 'window.SIM_WASM_SHA256 = null;\n' > viewer/dist/sim_sha.js
+fi
 
 # -- headless core (node verification build) ---------------------------------
 emcc -O2 \

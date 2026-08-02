@@ -29,19 +29,17 @@
     background: #12302c; color: #cfe; border: 1px solid #2a5;
     border-radius: 4px; font: inherit; padding: 4px 12px; cursor: pointer;
   }
-  button:disabled { opacity: .4; cursor: default; }
+  button:disabled, select:disabled { opacity: .4; cursor: default; }
   #seek { width: 380px; }
   #tickinfo { min-width: 130px; text-align: center; }
-  #teams {
-    display: flex; gap: 40px; margin: 6px 0 16px; font-size: 13px;
-  }
-  #teams h3 { margin: 0 0 4px; font-size: 13px; font-weight: bold; }
-  #teams .radiant h3 { color: #4cf; }
-  #teams .dire h3 { color: #f66; }
-  #teams ul { list-style: none; margin: 0; padding: 0; }
+  #seats { margin: 6px 0 16px; font-size: 13px; }
+  #seats h3 { margin: 0 0 4px; font-size: 13px; font-weight: bold; color: #4cf; }
+  #seats ol { margin: 0; padding: 0 0 0 1.6em; }
+  #seats li.followed { color: #fd5; }
   #endcard {
     margin: 4px 0 10px; font-size: 15px; color: #fd5; min-height: 1.2em;
   }
+  #warn { margin: 2px 0 6px; font-size: 13px; color: #fa4; }
 </style>
 </head>
 <body>
@@ -60,11 +58,13 @@
   </select>
   <input id="seek" type="range" min="0" max="0" value="0" step="1" disabled>
   <span id="tickinfo">- / -</span>
+  <select id="follow" disabled></select>
 </div>
 <div id="endcard"></div>
-<div id="teams">
-  <div class="radiant"><h3>Radiant</h3><ul id="radiant-names"></ul></div>
-  <div class="dire"><h3>Dire</h3><ul id="dire-names"></ul></div>
+<div id="warn"></div>
+<div id="seats">
+  <h3>Standings (mean score per life)</h3>
+  <ol id="seat-list"></ol>
 </div>
 
 <script>
@@ -74,38 +74,87 @@ const statusEl = $("status");
 
 let header = null;       // replay header JSON (JS-side parse)
 let totalTicks = 0;
+let numAgents = 0;
 let seeking = false;
 
 function setStatus(text) { statusEl.textContent = text; }
 
-// Replay header parse: magic "MOBA" + version u8 + header_len u32le + JSON.
-// (Binary layout authority: server/cogame_moba/replay.py.)
+// Replay header parse: magic "NMMO" + version u8 + header_len u32le + JSON.
+// (Binary layout authority: server/cogame_nmmo/replay.py.)
 function parseHeader(buf) {
   if (buf.length < 9) throw new Error("replay too short");
   const magic = String.fromCharCode(...buf.slice(0, 4));
-  if (magic !== "MOBA") throw new Error("bad magic: " + magic);
+  if (magic !== "NMMO") throw new Error("bad magic: " + magic);
   if (buf[4] !== 1) throw new Error("unsupported version: " + buf[4]);
   const headerLen =
     new DataView(buf.buffer, buf.byteOffset + 5, 4).getUint32(0, true);
   return JSON.parse(new TextDecoder().decode(buf.slice(9, 9 + headerLen)));
 }
 
-// Names overlay: seat i controls heroes [i*h, (i+1)*h); pids 0-4 are
-// radiant, 5-9 dire. textContent only — names are player-controlled data.
-function fillNames(cfg) {
-  const h = cfg.heroes_per_seat || 1;
-  cfg.players.forEach((p, seat) => {
-    const team = Math.floor((seat * h) / 5);
+// The replay body stride: seat i controls agents [i*h, (i+1)*h). A header
+// that cannot state the topology is unusable — fail loudly.
+function agentTopology(cfg) {
+  const h = cfg.heroes_per_seat;
+  if (!Array.isArray(cfg.players) || cfg.players.length < 1 ||
+      !Number.isInteger(h) || h < 1) {
+    throw new Error("header config lacks players/heroes_per_seat topology");
+  }
+  return { seats: cfg.players.length, heroesPerSeat: h,
+           agents: cfg.players.length * h };
+}
+
+// Standings list: seats ranked by final score (header.result.scores —
+// mean score per life, engine-derived; episodes have no winner).
+// textContent only — names are player-controlled data. The list doubles
+// as the endcard's data source and highlights the followed seat.
+function fillSeats(cfg) {
+  const scores = (header.result && header.result.scores) || [];
+  const rows = cfg.players.map((p, seat) => ({
+    seat, name: p.name,
+    score: typeof scores[seat] === "number" ? scores[seat] : null,
+  }));
+  rows.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+  const list = $("seat-list");
+  list.textContent = "";
+  for (const r of rows) {
     const li = document.createElement("li");
-    li.textContent = p.name;
-    $(team === 0 ? "radiant-names" : "dire-names").appendChild(li);
+    li.dataset.seat = r.seat;
+    li.textContent = r.score === null
+      ? r.name : `${r.name} — ${r.score.toFixed(2)}`;
+    list.appendChild(li);
+  }
+}
+
+// Camera-follow selector: one entry per seat (the centered renderer
+// tracks a single agent; seat i's first agent). textContent-only names.
+function fillFollow(cfg, heroesPerSeat) {
+  const sel = $("follow");
+  sel.textContent = "";
+  cfg.players.forEach((p, seat) => {
+    const opt = document.createElement("option");
+    opt.value = String(seat * heroesPerSeat);
+    opt.textContent = `follow: ${p.name}`;
+    sel.appendChild(opt);
   });
 }
 
-function winnerText() {
+function highlightFollowed() {
+  const pid = Module.ccall("viewer_get_follow", "number", [], []);
+  for (const li of $("seat-list").children) {
+    const h = header.config.heroes_per_seat || 1;
+    li.classList.toggle(
+      "followed", Number(li.dataset.seat) === Math.floor(pid / h));
+  }
+}
+
+function endcardText() {
   const r = header.result || {};
-  const who = r.winner === 0 ? "radiant wins"
-    : r.winner === 1 ? "dire wins" : "draw";
+  const scores = r.scores || [];
+  const names = header.config.players.map(p => p.name);
+  const best = scores.length
+    ? names[scores.indexOf(Math.max(...scores))] : null;
+  const who = best === null ? "final standings above"
+    : `top seat: ${best}`;
   return r.end_reason ? `${who} (${r.end_reason})` : who;
 }
 
@@ -116,7 +165,7 @@ function refreshUi() {
   if (!seeking) $("seek").value = tick;
   const ended = !playing && tick >= totalTicks && totalTicks > 0;
   $("playpause").textContent = playing ? "pause" : (ended ? "replay" : "play");
-  $("endcard").textContent = ended ? winnerText() : "";
+  $("endcard").textContent = ended ? endcardText() : "";
   requestAnimationFrame(refreshUi);
 }
 
@@ -128,7 +177,23 @@ async function loadReplay() {
   if (!resp.ok) throw new Error(`fetch ${url}: HTTP ${resp.status}`);
   const bytes = new Uint8Array(await resp.arrayBuffer());
   header = parseHeader(bytes);
-  fillNames(header.config);
+  const topo = agentTopology(header.config);
+  numAgents = topo.agents;
+  fillSeats(header.config);
+  fillFollow(header.config, topo.heroesPerSeat);
+
+  // sim/build_viewer.sh embeds the sha of the sim wasm this viewer was
+  // built alongside (sim_sha.js, optional). A replay recorded with a
+  // different sim build may re-simulate divergently — warn on screen.
+  const builtSha = window.SIM_WASM_SHA256;
+  const replaySha = header.sim_wasm_sha256;
+  if (builtSha && replaySha && replaySha !== "unknown" &&
+      builtSha !== replaySha) {
+    $("warn").textContent =
+      "warning: replay was recorded with a different sim build (replay " +
+      replaySha.slice(0, 12) + "… vs viewer " +
+      builtSha.slice(0, 12) + "…); re-simulation may diverge";
+  }
 
   // Copy into the wasm heap; the buffer stays alive for the page's
   // lifetime (viewer_load keeps a pointer to the action body).
@@ -141,7 +206,8 @@ async function loadReplay() {
   const seed = header.config.seed >>> 0;  // & 0xFFFFFFFF, like the host
   totalTicks = Module.ccall(
     "viewer_load", "number",
-    ["number", "number", "number"], [ptr, bytes.length, seed]);
+    ["number", "number", "number", "number"],
+    [ptr, bytes.length, seed, numAgents]);
   if (totalTicks < 0) throw new Error("viewer_load rejected replay bytes");
   if (totalTicks !== header.tick_count) {
     throw new Error(
@@ -149,8 +215,10 @@ async function loadReplay() {
   }
 
   $("seek").max = totalTicks;
-  for (const el of ["playpause", "speed", "seek"]) $(el).disabled = false;
+  for (const el of ["playpause", "speed", "seek", "follow"])
+    $(el).disabled = false;
   setStatus("");
+  highlightFollowed();
   Module.ccall("viewer_set_playing", null, ["number"], [1]);
   refreshUi();
 }
@@ -170,6 +238,11 @@ $("playpause").addEventListener("click", () => {
 
 $("speed").addEventListener("change", (e) => {
   Module.ccall("viewer_set_speed", null, ["number"], [Number(e.target.value)]);
+});
+
+$("follow").addEventListener("change", (e) => {
+  Module.ccall("viewer_set_follow", null, ["number"], [Number(e.target.value)]);
+  highlightFollowed();
 });
 
 // Seek re-simulates from tick 0 (deterministic but not free): preview the
@@ -205,8 +278,13 @@ var Module = {
     loadReplay().catch((e) => setStatus("failed:\n" + e.message));
   },
   printErr: (t) => console.error(t),
+  // Runtime death must be visible on the page, not only in the console
+  // (e.g. an OOM abort mid-seek would otherwise just freeze the canvas).
+  onAbort: (what) => setStatus("viewer wasm aborted:\n" + what),
+  onExit: (code) => { if (code !== 0) setStatus("viewer wasm exited: " + code); },
 };
 </script>
-<script src="moba_viewer.js"></script>
+<script src="sim_sha.js"></script>
+<script src="nmmo3_viewer.js"></script>
 </body>
 </html>
