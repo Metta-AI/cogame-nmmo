@@ -30,14 +30,28 @@ server -> player   {"done": true, "result": {...}}         episode end, then clo
   **1707 bytes**. Agent order within a seat is ascending pid; seat `i`
   controls pids `[i*h, (i+1)*h)` with `h = heroes_per_seat`.
 - `resets` is a parallel array of booleans, one per agent this seat
-  controls: `resets[j]` is true when that agent's terminal fired on the
-  **previous** sim step — it died (attack death) or hit the 500-tick
-  stagnation reset, and respawned in place. The obs delivered alongside
-  is the first observation of the agent's new life, so a recurrent
-  policy must zero that agent's hidden state *before* consuming this
-  tick's obs (exactly what upstream's demo `forward()` does with the
-  env's done flags). All false at tick 0. Non-recurrent policies may
-  ignore the field.
+  controls: `resets[j]` is true when that agent's terminal fired — it
+  died (attack death) or hit the 500-tick stagnation reset, and
+  respawned in place — on a sim step **this seat has not yet
+  acknowledged**. A recurrent policy must zero that agent's hidden
+  state *before* consuming this tick's obs (exactly what upstream's
+  demo `forward()` does with the env's done flags). All false at
+  tick 0. Non-recurrent policies may ignore the field.
+
+  Delivery is **at-least-once**: the server keeps a per-agent pending
+  flag, ORs every step's terminals into it, sends it with every payload
+  to the owning seat, and clears it only when a *valid* reply comes
+  back for a payload that carried it (the reply proves the payload was
+  consumed). A seat that is lagging, strike-dead, or reconnecting
+  therefore still sees `true` on the first payload it actually answers
+  after a death in the gap — the flag is never lost, so stale recurrent
+  state is bounded by one gap, not carried indefinitely. The tradeoff
+  is bounded duplication: if a reply is late or dropped (played as
+  NOOP), the next payload repeats `true`, and a policy that did consume
+  the earlier payload zeroes one extra tick of legitimate state —
+  bounded and harmless next to unbounded staleness. For a seat that
+  answers every tick in time, `resets` is exactly the previous step's
+  done flags.
 - `actions` is one single-int row per agent (the 26-way discrete action,
   see below): e.g. a 1-agent seat replies `{"tick": 5, "actions": [[17]]}`.
 - The reply must echo the same `tick`. Wrong-tick, malformed, late
@@ -107,9 +121,8 @@ the results field), and the final `{"done": true, "result": {...}}`.
 ## Results
 
 `results.json` (closed key set, see the manifest `results_schema`):
-`names`, `scores` (raw per-seat score, higher = better — cumulative
-min(combat, profession) level over ended lives + the final life's min,
-summed over the seat's agents; there is no winner field), `reward_sums`,
+`names`, `scores` (per-seat score, higher = better; there is no winner
+field), `reward_sums`,
 `end_reason` (`tick_cap` | `wall_clock` | `sim_fault`), `final_tick`,
 `seed`, `state_digest` (u32 sim digest at episode end; a re-sim of the
 replay reproduces it), `agent_stats` (per-agent score breakdown:
@@ -117,6 +130,22 @@ replay reproduces it), `agent_stats` (per-agent score breakdown:
 `time_alive`), `noop_ticks`, `dead_seats`, `noop_causes`. A `sim_fault`
 episode scores every seat 0.0 (equal = drawn; an infra fault is
 nobody's loss).
+
+The score is the **mean min(combat, profession) level per life**,
+summed over the seat's agents: per agent,
+`(cumulative min(comb, prof) over ended lives + the current life's min)
+/ (deaths + 1)` — the numerator is upstream's per-life score quantity
+(`add_player_log`), the `+ 1` counts the current life. Normalizing by
+lives is upstream-precedented (puffer's own eval reports
+`log.min_comb_prof / log.n`) and exists to kill the suicide-farming
+exploit: the raw cumulative total rewards dying every ~50 ticks — each
+death banks min >= 1 and respawns — at a better rate than leveling
+earns, so random walkers would out-rank policies that actually play.
+Under the mean, a death always hurts. Edge case: an agent
+dead-awaiting-respawn exactly at the tick cap has its just-ended life
+counted in `deaths` while its current life contributes 0 — a bounded,
+deterministic dilution. The raw ingredients (`cum_min_comb_prof`,
+`deaths`) stay available per agent in `agent_stats`.
 
 ## Runtime contract (Coworld)
 

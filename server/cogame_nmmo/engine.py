@@ -7,23 +7,38 @@ malformed, feed the sim, step, accumulate rewards. A seat can never
 crash the episode: any exception, timeout, or bad payload from a source
 degrades to the no-op action for that seat's agents.
 
-Each ``get_actions`` call also carries per-agent ``resets`` flags: True
-when that agent's terminal fired on the previous sim step (attack death
-or 500-tick stagnation reset, respawn in place) — i.e. the obs delivered
-alongside is the first of a new life, and recurrent policies must zero
-that agent's state (protocol v2 ``resets``; see docs/PROTOCOL.md).
+Each ``get_actions`` call also carries per-agent ``resets`` flags
+(protocol v2, see docs/PROTOCOL.md): True when that agent's terminal
+fired (attack death or 500-tick stagnation reset, respawn in place) on
+a sim step the seat has not yet acknowledged — i.e. the seat must zero
+that agent's recurrent state before consuming this tick's obs. Each
+step's done flags are OR'd into a per-agent pending mask; a payload
+delivers the seat's slice of the mask, and the delivered bits are
+cleared only when a VALID reply arrives for that payload (a valid reply
+proves the payload was consumed). A seat that is timing out, dead, or
+disconnected therefore keeps re-receiving the flag until it answers:
+delivery is at-least-once, never lost. For a connected seat answering
+every tick this degenerates to exactly "the previous step's dones".
 
 The optional ``on_tick(tick, actions)`` callback receives the post-clamp
 (num_agents, 1) uint8 action matrix exactly as fed to the sim — the
 replay writer hooks here.
 
 Scoring: NMMO3 has no env termination — episodes end at the tick cap
-(or the wall-clock budget / a sim fault). Seats are ranked by score:
-per-agent cumulative min(comb_lvl, prof_lvl) over ended lives plus the
-current life's min (sim/shim.c ``nmmo_score``), summed over a seat's
-agents. The shim's cumulative accessors are stateful, so the engine
-reads scores ONCE at episode end (a live standings feed can read
-``sim.score`` any time; the server's /global broadcast does).
+(or the wall-clock budget / a sim fault). Seats are ranked by MEAN
+SCORE PER LIFE: per agent, cumulative min(comb_lvl, prof_lvl) over
+ended lives plus the current life's min (sim/shim.c ``nmmo_score``),
+divided by (deaths + 1) — the +1 counts the current life — then summed
+over a seat's agents. Dividing by lives is upstream-precedented
+(puffer's eval normalizes log.min_comb_prof by log.n) and closes the
+suicide-farming exploit: raw cumulative score rewards dying every ~50
+ticks to re-bank min=1 per life faster than leveling earns it. An
+agent dead-awaiting-respawn exactly at tick cap has its just-ended
+life in ``deaths`` while the current life contributes 0 — a bounded,
+deterministic dilution, accepted. The shim's cumulative accessors are
+stateful, so the engine reads scores ONCE at episode end (a live
+standings feed can compute the same quotient any time; the server's
+/global broadcast does).
 
 Strike rule (bounds worst-case wall clock): a seat that fails to deliver
 a valid action for ``STRIKE_LIMIT`` consecutive ticks is marked dead —
@@ -111,7 +126,8 @@ class ActionSource(Protocol):
 @dataclass(frozen=True)
 class EpisodeResult:
     end_reason: EndReason
-    seat_scores: tuple[float, ...]        # final score per seat, higher=better
+    seat_scores: tuple[float, ...]        # mean-per-life score per seat,
+                                          # higher = better (_seat_score)
     seat_reward_sums: tuple[float, ...]   # sim reward sums per seat
     agent_stats: tuple[dict, ...]         # num_agents dicts keyed by STAT_CODES
     final_tick: int
@@ -162,9 +178,12 @@ class LockstepEngine:
         self._sim_fault = False
         self._ticks_run = 0
         self._progress_interval = progress_interval_seconds
-        # Previous step's per-agent done flags: the protocol v2 `resets`
-        # delivered with the NEXT tick's obs (all False at tick 0).
-        self._last_dones = [False] * config.num_agents
+        # Per-agent pending `resets` mask (protocol v2): each step's done
+        # flags are OR'd in; a payload delivers a seat's slice, and the
+        # delivered bits are cleared only on a valid reply to that
+        # payload (at-least-once delivery — see the module docstring).
+        # All False at tick 0.
+        self._pending_resets = [False] * config.num_agents
 
     async def run(self) -> EpisodeResult:
         sim = self._sim
@@ -212,14 +231,20 @@ class LockstepEngine:
                     # starves the event loop (stalled /healthz -> liveness
                     # kill; revival probes never even run).
                     await asyncio.sleep(0)
+                # Snapshot each live seat's delivered resets mask: a valid
+                # reply this tick clears exactly these bits (dones OR'd in
+                # by this tick's step stay pending for the next payload).
+                live_resets = {s: self._seat_resets(s) for s in live}
                 gathered = await asyncio.gather(*(
                     self._seat_actions(
                         s, tick, obs[self._seat_slices[s]],
-                        self._seat_resets(s), deadline)
+                        live_resets[s], deadline)
                     for s in live))
-                replies: list = [(None, "timeout")] * cfg.num_seats
-                for s, reply_cause in zip(live, gathered):
-                    replies[s] = reply_cause
+                # (reply, cause, delivered-resets mask) per seat; the mask
+                # is None when no reply arrived (nothing to acknowledge).
+                replies: list = [(None, "timeout", None)] * cfg.num_seats
+                for s, (reply, cause) in zip(live, gathered):
+                    replies[s] = (reply, cause, live_resets[s])
                 for s in range(cfg.num_seats):
                     if self._strikes[s] >= self._strike_limit:
                         replies[s] = self._poll_dead_seat(
@@ -227,10 +252,11 @@ class LockstepEngine:
                             self._seat_resets(s))
 
                 actions = np.tile(noop_row, (cfg.num_agents, 1))
-                for seat, (reply, cause) in enumerate(replies):
+                for seat, (reply, cause, delivered) in enumerate(replies):
                     sanitized = _sanitize(reply, h)
                     if sanitized is not None:
                         actions[self._seat_slices[seat]] = sanitized
+                        self._ack_resets(seat, delivered)
                         if self._strikes[seat] >= self._strike_limit:
                             print(f"seat {seat} revived at tick {tick} "
                                   f"(valid action after "
@@ -274,10 +300,16 @@ class LockstepEngine:
 
                 try:
                     rewards = np.asarray(sim.rewards(), dtype=np.float64)
-                    self._last_dones = list(sim.dones())
+                    step_dones = list(sim.dones())
                 except Exception:
                     self._sim_fault = True
                     break
+                # OR this step's terminals into the pending mask: they stay
+                # flagged until some payload carrying them gets a valid
+                # reply (see _ack_resets).
+                for pid, done in enumerate(step_dones):
+                    if done:
+                        self._pending_resets[pid] = True
                 for seat in range(cfg.num_seats):
                     reward_sums[seat] += float(
                         rewards[self._seat_slices[seat]].sum())
@@ -307,9 +339,21 @@ class LockstepEngine:
         return self._build_result(reward_sums)
 
     def _seat_resets(self, seat: int) -> list[bool]:
-        """One seat's slice of the previous step's done flags."""
+        """One seat's slice of the pending resets mask (a snapshot)."""
         s = self._seat_slices[seat]
-        return self._last_dones[s.start:s.stop]
+        return self._pending_resets[s.start:s.stop]
+
+    def _ack_resets(self, seat: int, delivered: list[bool] | None) -> None:
+        """A valid reply acknowledges the payload that carried
+        ``delivered``: clear exactly those bits of the pending mask.
+        Bits OR'd in after that payload was built (later steps' dones)
+        stay pending for the seat's next payload."""
+        if not delivered:
+            return
+        base = self._seat_slices[seat].start
+        for j, flag in enumerate(delivered):
+            if flag:
+                self._pending_resets[base + j] = False
 
     def _poll_dead_seat(self, seat: int, tick: int, seat_obs: np.ndarray,
                         seat_resets: list[bool]):
@@ -322,7 +366,7 @@ class LockstepEngine:
         probe outstanding. Never awaits: dead seats cost no wall clock.
         """
         # Probe still outstanding: the seat has not answered in time.
-        reply_cause = (None, "timeout")
+        reply_cause = (None, "timeout", None)
         probe = self._probes[seat]
         if probe is not None and probe.done():
             self._probes[seat] = None
@@ -341,8 +385,10 @@ class LockstepEngine:
                           seat_obs: np.ndarray, seat_resets: list[bool]):
         """Un-deadlined get_actions for revival probes.
 
-        Returns ``(reply, cause)`` like _seat_actions; never raises
-        (except cancellation).
+        Returns ``(reply, cause, delivered-resets)`` like the live path;
+        the delivered mask is the pending-resets snapshot this probe's
+        payload carried (cleared on harvest iff the reply is valid).
+        Never raises (except cancellation).
         """
         try:
             reply = await self._sources[seat].get_actions(
@@ -351,10 +397,10 @@ class LockstepEngine:
             raise
         except Exception as exc:
             self._log_host_error(seat, exc)
-            return None, "host_error"
+            return None, "host_error", None
         if reply is None:
-            return None, "disconnected"
-        return reply, None
+            return None, "disconnected", None
+        return reply, None, seat_resets
 
     async def _seat_actions(self, seat: int, tick: int,
                             seat_obs: np.ndarray, seat_resets: list[bool],
@@ -392,10 +438,21 @@ class LockstepEngine:
               file=sys.stderr)
 
     def _seat_score(self, seat: int) -> float:
-        """A seat's final score: sim.score summed over its agents."""
+        """A seat's final score: per-agent mean score per life, summed
+        over the seat's agents.
+
+        mean per life = sim.score(pid) / (deaths + 1): sim.score is the
+        cumulative min(comb,prof) over ended lives + the current life's
+        min, and deaths + 1 is the number of lives that value spans (the
+        +1 is the current life — see the module docstring for the
+        tick-cap edge case and the anti-suicide-farming rationale).
+        """
         s = self._seat_slices[seat]
-        return float(sum(self._sim.score(pid)
-                         for pid in range(s.start, s.stop)))
+        deaths_code = STAT_CODES["deaths"]
+        return float(sum(
+            self._sim.score(pid)
+            / (self._sim.agent_stat(pid, deaths_code) + 1)
+            for pid in range(s.start, s.stop)))
 
     def _build_result(self, reward_sums: np.ndarray) -> EpisodeResult:
         sim = self._sim

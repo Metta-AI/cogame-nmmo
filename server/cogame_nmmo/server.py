@@ -14,9 +14,12 @@ Wire protocol v2, one JSON text message per tick each way:
     player -> server  {"tick": t, "actions": [[1 int] x heroes]}
     server -> player  {"done": true, "result": {...}}   (episode end)
 
-``resets[i]`` is True when that agent's terminal fired on the previous
-sim step (death or stagnation respawn): the obs alongside is the first
-of a new life and recurrent policies must zero that agent's state.
+``resets[i]`` is True when that agent's terminal fired (death or
+stagnation respawn) on a sim step this seat has not yet acknowledged
+with a valid reply: recurrent policies must zero that agent's state
+before consuming this tick's obs. Delivery is at-least-once (the
+engine's pending mask, see engine.py and docs/PROTOCOL.md); for a seat
+answering every tick it is exactly the previous step's done flags.
 
 Wrong-tick or malformed replies are treated as missing (NOOP for that
 tick); the connection stays up and the episode never crashes.
@@ -127,10 +130,9 @@ class WsSeat:
     immediately (the engine plays NOOP without burning the deadline).
     """
 
-    def __init__(self, slot: int, name: str, heroes_per_seat: int):
+    def __init__(self, slot: int, name: str):
         self.slot = slot
         self.name = name
-        self.heroes_per_seat = heroes_per_seat
         self.ws: web.WebSocketResponse | None = None
         self.ever_connected = False
         self._waiter: tuple[int, asyncio.Future] | None = None
@@ -150,8 +152,9 @@ class WsSeat:
             "tick": tick,
             "obs": [base64.b64encode(row.tobytes()).decode("ascii")
                     for row in obs],
-            # protocol v2: per-agent done flags from the previous step
-            # (recurrent policies zero that agent's state)
+            # protocol v2: per-agent not-yet-acknowledged done flags
+            # (recurrent policies zero that agent's state; the engine
+            # owns the pending mask and its at-least-once semantics)
             "resets": [bool(r) for r in resets],
         })
         fut = asyncio.get_running_loop().create_future()
@@ -217,7 +220,7 @@ class GameServer:
         self.sim_factory = sim_factory
         self.wasm_path = wasm_path
         self.seats = [
-            WsSeat(slot, player.name, config.heroes_per_seat)
+            WsSeat(slot, player.name)
             for slot, player in enumerate(config.players)]
         self._all_connected = asyncio.Event()
         self.result: EpisodeResult | None = None
@@ -408,16 +411,24 @@ class GameServer:
         def live_scores() -> list[float] | None:
             """Current per-seat score standings for the /global feed.
 
-            Reads sim.score directly (cheap wasm calls); best-effort —
-            a faulting sim must never break the broadcast path.
+            Same metric as the final results: per-agent mean score per
+            life, sim.score / (deaths + 1), summed over the seat's
+            agents (see engine._seat_score). A death mid-episode can
+            LOWER a seat's standing — expected mean behavior, not a
+            bug. Reads the sim directly (cheap wasm calls);
+            best-effort — a faulting sim must never break the
+            broadcast path.
             """
             if sim is None:
                 return None
+            deaths_code = STAT_CODES["deaths"]
             try:
                 return [
-                    float(sum(sim.score(pid) for pid in
-                              defaults.seat_hero_pids(
-                                  seat, cfg.heroes_per_seat)))
+                    float(sum(
+                        sim.score(pid)
+                        / (sim.agent_stat(pid, deaths_code) + 1)
+                        for pid in defaults.seat_hero_pids(
+                            seat, cfg.heroes_per_seat)))
                     for seat in range(cfg.num_seats)]
             except Exception:
                 return None
@@ -530,8 +541,12 @@ class GameServer:
 
         Columnar arrays in config player/seat order (names, scores)
         follow the coworld-ctf convention; `scores` is the field
-        cross-game Coworld consumers require (raw final score per seat,
+        cross-game Coworld consumers require (final score per seat,
         higher = better — NOT win/loss 1/0; episodes have no winner).
+        The score is the seat's summed per-agent MEAN score per life
+        (see engine._seat_score: sim.score / (deaths + 1)) — raw
+        cumulative values are suicide-farmable; the raw ingredients
+        stay available in `agent_stats` (cum_min_comb_prof, deaths).
         `agent_stats` is the score breakdown per agent pid (seat i owns
         pids [i*h, (i+1)*h); with the default heroes_per_seat=1 it IS the
         per-seat breakdown). Closed key set: triple-synced with the

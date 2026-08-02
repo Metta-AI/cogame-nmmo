@@ -30,14 +30,20 @@ class FakeSim:
 
     ``dones_at`` maps tick -> list of agent pids whose terminal fires on
     that tick's step (the engine must forward them as `resets` with the
-    NEXT tick's obs). ``scores`` are returned by score(pid).
+    NEXT tick's obs). ``scores`` are returned by score(pid); ``deaths``
+    (default all 0) by agent_stat(pid, 1) — the engine divides score by
+    deaths + 1 (mean per life), so the default makes seat scores equal
+    the raw ``scores`` values.
     """
 
-    def __init__(self, num_agents=8, dones_at=None, scores=None):
+    def __init__(self, num_agents=8, dones_at=None, scores=None,
+                 deaths=None):
         self.num_agents = num_agents
         self._tick = 0
         self.dones_at = dones_at or {}
         self.scores = list(scores) if scores is not None \
+            else [0] * num_agents
+        self.deaths = list(deaths) if deaths is not None \
             else [0] * num_agents
         self.fed_actions = []  # list of (num_agents, 1) float32 arrays
 
@@ -67,6 +73,8 @@ class FakeSim:
         return self._tick
 
     def agent_stat(self, pid, which):
+        if which == 1:  # STAT_CODES["deaths"]: a real, controllable count
+            return self.deaths[pid]
         return pid * 100 + which
 
     def score(self, pid):
@@ -164,7 +172,10 @@ async def test_solo_variant_obs_is_single_agent_row():
 
 async def test_resets_forwarded_with_next_ticks_obs():
     """An agent whose terminal fires on tick T's step is flagged in the
-    resets delivered with tick T+1's obs — and only that tick."""
+    resets delivered with tick T+1's obs — and only that tick. (Sources
+    here answer validly every tick, so the pending-resets mask degrades
+    to exactly one-shot next-tick delivery; the loss/duplication paths
+    are covered by the pending-mask tests below.)"""
     sim = FakeSim(dones_at={2: [3], 4: [0, 5]})
     sources = [ScriptedSource([NOOP]) for _ in range(8)]
     cfg = make_config(max_ticks=7)
@@ -193,6 +204,99 @@ async def test_multi_agent_seat_resets_sliced_per_seat():
     await LockstepEngine(sim, cfg, [seat0, seat1]).run()
     assert seat0.seen[1][2] == [False, True, False, False]
     assert seat1.seen[1][2] == [False, False, True, False]
+
+
+# -- resets pending mask: at-least-once delivery ------------------------------
+
+async def test_death_while_seat_dead_delivered_on_revival():
+    """Resets must never be lost while a seat cannot consume payloads:
+    a death during a strike-dead window stays in the pending mask and
+    rides the first payload the seat validly answers (the revival
+    probe); the payload after that is clear again. (Under the old
+    one-shot semantics the flag lived only on the tick right after the
+    death and was gone by revival — a recurrent policy would carry the
+    dead life's hidden state forever.)"""
+
+    class WakingSource:
+        """Hangs for the first ``sleep_asks`` asks, then answers."""
+
+        def __init__(self, sleep_asks):
+            self.asks = 0
+            self.sleep_asks = sleep_asks
+            self.answered = []  # (tick, resets) for asks that returned
+
+        async def get_actions(self, tick, obs, resets):
+            self.asks += 1
+            if self.asks <= self.sleep_asks:
+                await asyncio.sleep(60)
+            self.answered.append((tick, list(resets)))
+            return [[1]]
+
+    # agent 7 dies on tick 5's step, while seat 7 is striking out
+    # (asks 1-10 hang -> dead at tick 9; ask 11 = the revival probe)
+    sim = FakeSim(dones_at={5: [7]})
+    waking = WakingSource(sleep_asks=10)
+    sources = [ScriptedSource([NOOP]) for _ in range(7)] + [waking]
+    cfg = make_config(max_ticks=25, tick_deadline_ms=50)
+    result = await LockstepEngine(sim, cfg, sources).run()
+    assert result.seat_dead[7] is False, "seat never revived"
+    assert waking.answered, "seat never answered"
+    first, rest = waking.answered[0], waking.answered[1:]
+    assert first[1] == [True], waking.answered
+    assert rest and all(r == [False] for _, r in rest), waking.answered
+
+
+async def test_late_reply_redelivers_resets_bounded_duplicate():
+    """A payload carrying resets=True whose reply misses the deadline is
+    not acknowledged: the NEXT payload repeats True even though the
+    client may well have consumed the first one. This pins the accepted
+    tradeoff (PROTOCOL.md): at-least-once delivery costs at most one
+    duplicate — one tick of legitimate recurrent state zeroed — versus
+    the old one-shot loss, which was unbounded staleness."""
+
+    class LateOnReset:
+        def __init__(self):
+            self.seen = []  # (tick, resets) at payload receipt
+
+        async def get_actions(self, tick, obs, resets):
+            self.seen.append((tick, list(resets)))
+            if tick == 3:  # the payload that first carries True
+                await asyncio.sleep(60)  # reply misses the deadline
+            return [[1]]
+
+    sim = FakeSim(dones_at={2: [7]})
+    src = LateOnReset()
+    sources = [ScriptedSource([NOOP]) for _ in range(7)] + [src]
+    cfg = make_config(max_ticks=7, tick_deadline_ms=50)
+    await LockstepEngine(sim, cfg, sources).run()
+    seen = dict(src.seen)
+    assert seen[2] == [False]
+    assert seen[3] == [True]   # first delivery: reply was late (NOOPed)
+    assert seen[4] == [True]   # bounded duplicate: re-delivered
+    assert seen[5] == [False]  # tick 4's valid reply acknowledged it
+
+
+async def test_malformed_reply_does_not_acknowledge_resets():
+    """Only a VALID reply proves the payload was consumed: a malformed
+    reply on the delivering tick leaves the flag pending."""
+
+    class GarbageOnReset:
+        def __init__(self):
+            self.seen = []
+
+        async def get_actions(self, tick, obs, resets):
+            self.seen.append((tick, list(resets)))
+            return "garbage" if tick == 3 else [[1]]
+
+    sim = FakeSim(dones_at={2: [7]})
+    src = GarbageOnReset()
+    sources = [ScriptedSource([NOOP]) for _ in range(7)] + [src]
+    cfg = make_config(max_ticks=7, tick_deadline_ms=200)
+    await LockstepEngine(sim, cfg, sources).run()
+    seen = dict(src.seen)
+    assert seen[3] == [True]
+    assert seen[4] == [True]   # not acknowledged by garbage
+    assert seen[5] == [False]
 
 
 # -- NOOP fallbacks ----------------------------------------------------------
@@ -294,8 +398,37 @@ async def test_multi_agent_seat_scores_summed():
     assert list(result.seat_scores) == [10.0, 100.0]
 
 
+async def test_seat_score_is_mean_per_life():
+    """The ranking score is the per-agent MEAN score per life —
+    sim.score(pid) / (deaths + 1), the +1 counting the current life —
+    summed over the seat's agents. Pinned exactly."""
+    sim = FakeSim(scores=[20, 6, 9, 0, 5, 5, 5, 5],
+                  deaths=[9, 1, 2, 0, 0, 1, 4, 9])
+    sources = [ScriptedSource([NOOP]) for _ in range(8)]
+    cfg = make_config(max_ticks=2)
+    result = await LockstepEngine(sim, cfg, sources).run()
+    assert list(result.seat_scores) == pytest.approx(
+        [2.0, 3.0, 3.0, 0.0, 5.0, 2.5, 1.0, 0.5])
+
+
+async def test_suicide_farmer_ranks_below_leveler():
+    """The anti-suicide-farming property (PROTOCOL.md scoring): a seat
+    that banks min=1 over many short lives has the higher RAW cumulative
+    score, but the mean-per-life ranking puts a single leveled life
+    strictly above it."""
+    # seat 0: 9 suicides + current life, min=1 each -> raw 10, 10 lives
+    # seat 1: one life leveled to min(comb,prof)=3   -> raw 3,  1 life
+    sim = FakeSim(scores=[10, 3, 0, 0, 0, 0, 0, 0],
+                  deaths=[9, 0, 0, 0, 0, 0, 0, 0])
+    sources = [ScriptedSource([NOOP]) for _ in range(8)]
+    cfg = make_config(max_ticks=2)
+    result = await LockstepEngine(sim, cfg, sources).run()
+    assert result.seat_scores[1] > result.seat_scores[0]
+    assert list(result.seat_scores[:2]) == [1.0, 3.0]
+
+
 async def test_reward_sums_and_stats():
-    sim = FakeSim()
+    sim = FakeSim(deaths=list(range(8)))
     sources = [ScriptedSource([NOOP]) for _ in range(8)]
     cfg = make_config(max_ticks=3)
     result = await LockstepEngine(sim, cfg, sources).run()
@@ -304,7 +437,7 @@ async def test_reward_sums_and_stats():
         [(p + 1) * 3 for p in range(8)])
     assert len(result.agent_stats) == 8
     assert set(result.agent_stats[0]) == set(STAT_CODES)
-    assert result.agent_stats[2]["deaths"] == 2 * 100 + 1
+    assert result.agent_stats[2]["deaths"] == 2
     assert result.agent_stats[7]["cum_min_comb_prof"] == 7 * 100 + 0
     assert result.agent_stats[3]["gold"] == 3 * 100 + 5
 
@@ -485,8 +618,10 @@ async def test_real_sim_end_to_end():
     assert result.end_reason == "tick_cap"
     assert sim.tick() == 40
     assert all(np.isfinite(result.seat_reward_sums))
-    # everyone starts at comb=prof=1: scores are always >= 0, and any
-    # agent alive contributes at least 1 (structure check, not magnitude)
+    # Mean-per-life scores are always >= 0; an agent alive at the cap
+    # contributes >= 1 (score >= deaths+1 when alive at min>=1) and a
+    # dead-awaiting-respawn one >= 1/2, so the total clears 1 easily
+    # (structure check, not magnitude).
     assert all(s >= 0 for s in result.seat_scores)
     assert sum(result.seat_scores) >= 1
     assert result.state_digest == sim.state_digest()
@@ -520,9 +655,15 @@ async def test_real_sim_deaths_surface_as_resets():
     total_resets = sum(len(s.reset_ticks) for s in sources)
     assert total_resets > 0, \
         "no resets forwarded in 600 random ticks - seed regression?"
-    # every death the sim counted was forwarded to exactly one source
+    # Every death the sim counted was forwarded exactly once (sources
+    # answer validly every tick, so the pending mask never duplicates) —
+    # EXCEPT deaths on the final tick's step, which have no next payload
+    # to ride: the episode is over. sim.dones() still holds the final
+    # step's flags, making the accounting exact rather than "equal
+    # unless the seed happens to kill someone on the last step".
+    final_step_deaths = sum(sim.dones())
     total_deaths = sum(sim.agent_stat(p, STAT_DEATHS) for p in range(8))
-    assert total_resets == total_deaths
+    assert total_resets == total_deaths - final_step_deaths
 
 
 async def test_real_sim_multi_agent_seat_slicing():
