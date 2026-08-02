@@ -87,16 +87,23 @@ the pretrained net was trained on them):
   bytes; the last byte of every observation stays at whatever it held
   before (0 forever, in practice). Do not read meaning into it.
 - **Stale entity bytes.** Bytes 4-9 of each tile cell (the entity
-  fields) are only written when an entity currently occupies that tile,
-  and the obs buffer is persistent and never cleared between ticks — a
-  tile an entity walked away from keeps the entity's old bytes until
-  another entity overwrites them. To know whether a tile's entity bytes
-  are *current*, a decoder must not trust them in isolation. The
-  upstream net was trained on exactly this residue.
+  fields) are only written when an entity currently occupies the
+  corresponding world tile, and the per-agent obs buffer is persistent
+  and never cleared between ticks. Crucially the staleness is
+  **per window cell**, not per world tile: the buffer is indexed by
+  position in the 11x15 egocentric scan, so when the agent moves, a
+  stale imprint stays at the same *relative* offset — it follows the
+  agent around, now overlaying a different world tile (verified against
+  the sim: an enemy imprint holds its window cell while the terrain
+  bytes under it change as the agent walks — see the liveness-map
+  rationale in `players/scripted_player.py` and its decoder tests in
+  `tests/test_scripted.py`). A decoder must never trust entity bytes in
+  isolation. The upstream net was trained on exactly this residue.
 
-Further decode guidance (window strides, scalar offsets) arrives with
-the Phase-N3 scripted player, which derives its layout constants from
-the vendored `nmmo3.h` factors table.
+Further decode guidance (window strides, scalar offsets, item/tile
+ids) is embodied in `players/scripted_player.py`, which derives its
+layout constants from the vendored `nmmo3.h` factors table and pins
+them against upstream in `tests/test_scripted.py`.
 
 ## Actions (1 value per agent)
 
@@ -177,5 +184,5 @@ packed post-clamp actions (one uint8 26-way action per agent per tick;
 `num_agents = len(players) x heroes_per_seat` from the header config).
 Seed + actions fully determine the episode: a fresh sim stepped through
 the recorded actions reproduces every obs/reward byte and the final
-`state_digest`; the Phase-N4 viewer re-simulates replays with the same
+`state_digest`; the browser viewer re-simulates replays with the same
 wasm sim. Ground truth: `server/cogame_nmmo/replay.py`.
