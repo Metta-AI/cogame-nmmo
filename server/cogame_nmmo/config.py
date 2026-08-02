@@ -6,8 +6,8 @@ seat-slot order):
 
     {
       "seed": 1234,                          // optional; derived if absent
-      "max_ticks": 40000,
-      "heroes_per_seat": 1,                  // 1 (10 seats) or 5 (2 seats)
+      "max_ticks": 5000,
+      "heroes_per_seat": 1,                  // agents per seat (default 1)
       "tick_deadline_ms": 1000,
       "player_connect_timeout_seconds": 180,
       "wall_clock_budget_seconds": 3240,   // optional; derived if absent
@@ -57,6 +57,12 @@ class GameConfig:
     def num_seats(self) -> int:
         return len(self.players)
 
+    @property
+    def num_agents(self) -> int:
+        """Total sim agents: seats x heroes_per_seat (NMMO3's num_agents
+        is elastic upstream; the default variant is 8 seats x 1)."""
+        return defaults.num_agents(self.num_seats, self.heroes_per_seat)
+
     @classmethod
     def from_dict(cls, data: dict) -> "GameConfig":
         if not isinstance(data, dict):
@@ -82,14 +88,10 @@ class GameConfig:
 
         heroes_per_seat = _int_field(
             data, "heroes_per_seat", defaults.DEFAULT_HEROES_PER_SEAT)
-        if heroes_per_seat not in defaults.VALID_HEROES_PER_SEAT:
+        if heroes_per_seat < 1:
             raise ConfigError(
-                f"heroes_per_seat must be one of {defaults.VALID_HEROES_PER_SEAT}, "
+                f"heroes_per_seat must be a positive integer, "
                 f"got {heroes_per_seat}")
-        if len(players) * heroes_per_seat != defaults.NUM_HEROES:
-            raise ConfigError(
-                f"players ({len(players)}) x heroes_per_seat ({heroes_per_seat}) "
-                f"must equal {defaults.NUM_HEROES} heroes")
 
         max_ticks = _int_field(data, "max_ticks", defaults.DEFAULT_MAX_TICKS)
         if max_ticks <= 0:

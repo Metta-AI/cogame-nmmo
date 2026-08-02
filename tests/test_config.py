@@ -1,12 +1,4 @@
-# Inherited cogame-moba suite: exercises the moba-shaped modules this fork
-# has not adapted yet. Skipped (not deleted) pending Phase N2 (server adaptation),
-# which replaces it — see docs/plans/2026-08-02-cogame-nmmo-implementation.md.
-import pytest
-
-pytest.skip("moba-specific suite pending Phase N2 (server adaptation) rewrite",
-            allow_module_level=True)
-
-"""Tests for game config parsing/validation and seat/hero mapping helpers."""
+"""Tests for game config parsing/validation and seat/agent mapping helpers."""
 
 import json
 
@@ -16,10 +8,10 @@ from cogame_nmmo import defaults
 from cogame_nmmo.config import ConfigError, GameConfig
 
 
-def base_dict(**overrides):
+def base_dict(num_seats=8, **overrides):
     d = {
-        "players": [{"name": f"player{i}"} for i in range(10)],
-        "tokens": [f"token-{i}" for i in range(10)],
+        "players": [{"name": f"player{i}"} for i in range(num_seats)],
+        "tokens": [f"token-{i}" for i in range(num_seats)],
     }
     d.update(overrides)
     return d
@@ -29,12 +21,13 @@ def base_dict(**overrides):
 
 def test_defaults_applied():
     cfg = GameConfig.from_dict(base_dict())
-    assert cfg.max_ticks == 40000
+    assert cfg.max_ticks == 5000
     assert cfg.heroes_per_seat == 1
     assert cfg.tick_deadline_ms == 1000
     assert cfg.player_connect_timeout_seconds == 180
-    assert cfg.num_seats == 10
-    assert [p.name for p in cfg.players] == [f"player{i}" for i in range(10)]
+    assert cfg.num_seats == 8
+    assert cfg.num_agents == 8
+    assert [p.name for p in cfg.players] == [f"player{i}" for i in range(8)]
 
 
 def test_seed_derived_and_recorded_when_missing():
@@ -60,36 +53,22 @@ def test_explicit_values_override_defaults():
     assert cfg.player_connect_timeout_seconds == 2
 
 
-def test_team_variant_parses():
-    d = base_dict(heroes_per_seat=5)
-    d["players"] = [{"name": "radiant"}, {"name": "dire"}]
-    d["tokens"] = ["t0", "t1"]
-    cfg = GameConfig.from_dict(d)
+def test_num_agents_is_seats_times_heroes():
+    # num_agents is elastic upstream: seats x heroes_per_seat, any product
+    cfg = GameConfig.from_dict(base_dict(num_seats=2, heroes_per_seat=4))
     assert cfg.num_seats == 2
-    assert cfg.heroes_per_seat == 5
+    assert cfg.heroes_per_seat == 4
+    assert cfg.num_agents == 8
+    cfg = GameConfig.from_dict(base_dict(num_seats=3))
+    assert cfg.num_agents == 3
 
 
 # -- validation --------------------------------------------------------------
 
-@pytest.mark.parametrize("heroes_per_seat", [0, 2, 3, 10, -1])
+@pytest.mark.parametrize("heroes_per_seat", [0, -1, "2", 1.5, True])
 def test_invalid_heroes_per_seat_rejected(heroes_per_seat):
     with pytest.raises(ConfigError):
         GameConfig.from_dict(base_dict(heroes_per_seat=heroes_per_seat))
-
-
-def test_wrong_player_count_rejected():
-    d = base_dict()
-    d["players"] = d["players"][:9]
-    d["tokens"] = d["tokens"][:9]
-    with pytest.raises(ConfigError):
-        GameConfig.from_dict(d)
-
-
-def test_team_variant_wrong_player_count_rejected():
-    d = base_dict(heroes_per_seat=5)
-    # 10 players x 5 heroes = 50 heroes: invalid
-    with pytest.raises(ConfigError):
-        GameConfig.from_dict(d)
 
 
 def test_token_length_mismatch_rejected():
@@ -124,7 +103,8 @@ def test_empty_player_name_rejected():
 # -- wall-clock budget -------------------------------------------------------
 
 def test_wall_clock_budget_default_derived():
-    # default: min(0.9 x platform episode timeout, max_ticks x deadline)
+    # 5000-tick default x 1s deadline = 5000s worst case, so the platform
+    # cap min(0.9 x episode timeout) = 3240s wins
     cfg = GameConfig.from_dict(base_dict())
     assert cfg.wall_clock_budget_seconds == pytest.approx(
         0.9 * defaults.PLATFORM_EPISODE_TIMEOUT_MINUTES * 60)
@@ -158,7 +138,7 @@ def test_to_dict_excludes_tokens_by_default():
     cfg = GameConfig.from_dict(base_dict(seed=7))
     d = cfg.to_dict()
     assert "tokens" not in d
-    assert d["players"] == [{"name": f"player{i}"} for i in range(10)]
+    assert d["players"] == [{"name": f"player{i}"} for i in range(8)]
     # round-trips through from_dict (tokens re-supplied)
     d2 = dict(d, tokens=list(cfg.tokens))
     cfg2 = GameConfig.from_dict(d2)
@@ -173,7 +153,7 @@ def test_from_file_uri(tmp_path):
         assert cfg.seed == 42
 
 
-# -- seat/hero/team mapping helpers -----------------------------------------
+# -- seat/agent mapping helpers ----------------------------------------------
 
 def test_noop_matches_sim_contract():
     from cogame_nmmo import sim
@@ -182,40 +162,26 @@ def test_noop_matches_sim_contract():
 
 
 def test_seat_hero_pids_solo():
-    for seat in range(10):
+    for seat in range(8):
         assert list(defaults.seat_hero_pids(seat, 1)) == [seat]
 
 
-def test_seat_hero_pids_team():
-    assert list(defaults.seat_hero_pids(0, 5)) == [0, 1, 2, 3, 4]
-    assert list(defaults.seat_hero_pids(1, 5)) == [5, 6, 7, 8, 9]
+def test_seat_hero_pids_multi():
+    assert list(defaults.seat_hero_pids(0, 4)) == [0, 1, 2, 3]
+    assert list(defaults.seat_hero_pids(1, 4)) == [4, 5, 6, 7]
 
 
 def test_seat_for_pid_inverts_mapping():
-    for h in (1, 5):
-        for seat in range(defaults.seat_count(h)):
+    for h in (1, 4):
+        for seat in range(4):
             for pid in defaults.seat_hero_pids(seat, h):
                 assert defaults.seat_for_pid(pid, h) == seat
 
 
-def test_team_for_pid():
-    # moba.h init: pids 0-4 spawn as team 0 (radiant), 5-9 as team 1 (dire)
-    for pid in range(5):
-        assert defaults.team_for_pid(pid) == 0
-    for pid in range(5, 10):
-        assert defaults.team_for_pid(pid) == 1
-
-
-def test_team_for_seat():
-    assert [defaults.team_for_seat(s, 1) for s in range(10)] == \
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
-    assert [defaults.team_for_seat(s, 5) for s in range(2)] == [0, 1]
-
-
 def test_clamp_actions():
     import numpy as np
-    raw = np.array([[6.9, -1.0, 2.0, 1.4, 0.0, 1.0],
-                    [99.0, 3.0, -7.0, 0.0, 1.0, 0.0]], dtype=np.float64)
+    raw = np.array([[25.9], [-1.0], [100.0], [4.0], [0.0], [7.5], [26.0],
+                    [-0.4]], dtype=np.float64)
     out = defaults.clamp_actions(raw)
     assert out.dtype == np.uint8
-    assert out.tolist() == [[6, 0, 2, 1, 0, 1], [6, 3, 0, 0, 1, 0]]
+    assert out.tolist() == [[25], [0], [25], [4], [0], [7], [25], [0]]
