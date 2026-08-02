@@ -92,6 +92,14 @@ class GameConfig:
             raise ConfigError(
                 f"heroes_per_seat must be a positive integer, "
                 f"got {heroes_per_seat}")
+        total_agents = defaults.num_agents(len(players), heroes_per_seat)
+        if total_agents > defaults.MAX_TOTAL_AGENTS:
+            raise ConfigError(
+                f"players x heroes_per_seat = {len(players)} x "
+                f"{heroes_per_seat} = {total_agents} sim agents exceeds the "
+                f"cap of {defaults.MAX_TOTAL_AGENTS} (upstream NMMO3 trains "
+                f"num_agents=1024, vendor/upstream/nmmo3.ini; the replay "
+                f"viewer rejects larger replays at the same bound)")
 
         max_ticks = _int_field(data, "max_ticks", defaults.DEFAULT_MAX_TICKS)
         if max_ticks <= 0:

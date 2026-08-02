@@ -71,6 +71,23 @@ def test_invalid_heroes_per_seat_rejected(heroes_per_seat):
         GameConfig.from_dict(base_dict(heroes_per_seat=heroes_per_seat))
 
 
+def test_total_agent_cap_enforced():
+    """seats x heroes_per_seat must stay within MAX_TOTAL_AGENTS (1024,
+    the upstream trained population and the replay viewer's load bound):
+    a config the server accepted but the viewer refuses to replay would
+    be a contract violation."""
+    assert defaults.MAX_TOTAL_AGENTS == 1024
+    # exactly at the cap: accepted
+    cfg = GameConfig.from_dict(base_dict(num_seats=256, heroes_per_seat=4))
+    assert cfg.num_agents == 1024
+    # one seat over: rejected, with the product spelled out
+    with pytest.raises(ConfigError, match=r"257 x 4 = 1028.*1024"):
+        GameConfig.from_dict(base_dict(num_seats=257, heroes_per_seat=4))
+    # oversized via heroes alone
+    with pytest.raises(ConfigError, match="exceeds the cap"):
+        GameConfig.from_dict(base_dict(num_seats=8, heroes_per_seat=129))
+
+
 def test_token_length_mismatch_rejected():
     d = base_dict()
     d["tokens"] = d["tokens"][:5]

@@ -34,6 +34,16 @@ DEFAULT_HEROES_PER_SEAT = 1
 DEFAULT_TICK_DEADLINE_MS = 1000
 DEFAULT_PLAYER_CONNECT_TIMEOUT_SECONDS = 180
 
+# Hard cap on total sim agents (num_seats * heroes_per_seat). 1024 is
+# the largest population upstream NMMO3 ships trained/tuned defaults for
+# (vendor/upstream/nmmo3.ini [env] num_agents = 1024) and the replay
+# viewer's load-time bound (sim/viewer_main.c VIEWER_MAX_AGENTS) — a
+# config the server accepted but the viewer refuses to replay would be
+# a contract violation. The manifest schema is tighter still (16 seats
+# x 4 heroes = 64) for league-sized episodes; this is the platform
+# ceiling.
+MAX_TOTAL_AGENTS = 1024
+
 # Mirrors the manifest's top-level episode_timeout_minutes (the platform
 # kills the container at that point, losing results and replay). The
 # default wall-clock budget is derived from it:
