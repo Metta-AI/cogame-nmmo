@@ -18,7 +18,12 @@ PRISTINE_WASM_PATH = REPO_ROOT / "build" / "nmmo3_sim_pristine.wasm"
 
 NUM_AGENTS = 8   # default seat count (num_agents is elastic upstream)
 # 11x15 tile window x 10 bytes + 47 self scalars + 10 reward bytes
-# (opaque contract; allocation site nmmo3.h:797)
+# (opaque contract; allocation site nmmo3.h:797). The shim exports no
+# obs-stride accessor, so this constant cannot be cross-checked against
+# the wasm without a shim change; the obs-contract snapshot test
+# (tests/test_obs_contract.py) would catch a stride drift as a digest
+# mismatch. TODO(N3): export an obs_size() from the shim when it is next
+# rebuilt for the brain work, and assert equality here at module init.
 OBS_SIZE = 11 * 15 * 10 + 47 + 10  # = 1707
 NUM_ATNS = 1     # one 26-way discrete action, delivered as 1 float
 

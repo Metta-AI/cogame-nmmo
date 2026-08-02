@@ -109,6 +109,59 @@ def test_terminals_fire_and_clear_per_tick():
         == death_events
 
 
+def test_stagnation_reset_attribution():
+    """Directed test for the shim's stagnation branch (shim.c: the
+    last_alive_min credit). A stagnation reset respawns the agent in the
+    SAME tick, wiping its death-time levels before the host can read
+    them, so the shim credits the value it cached on the last tick the
+    agent was alive. Stagnation is the only terminal that leaves hp > 0
+    (in-tick respawn at full health; an attack death leaves hp == 0
+    until a later-tick respawn), so hp at the done tick identifies the
+    branch.
+
+    Note: an all-NOOP drive cannot reach the 500-tick stagnation
+    threshold — idle agents are killed by roaming enemies within
+    ~20-100 ticks (verified empirically on several seeds), and spawn()
+    zeroes the stagnation ring buffer. Random play on seed 5 was
+    scanned instead: it deterministically produces a stagnation event
+    (tick 808, pid 2), and the tracked shadow value proves the credit
+    is exactly the last-alive min(comb, prof)."""
+    sim = NmmoSim(seed=5)
+    rng = np.random.default_rng(0)
+    # min(comb,prof) at the end of the last tick each agent was alive —
+    # the same shadow the shim maintains (everyone starts alive at 1)
+    prev_life_min = [1] * NUM_AGENTS
+    stagnations = 0
+    for _ in range(850):
+        prev_cum = [sim.agent_stat(p, STAT_CUM_MIN_COMB_PROF)
+                    for p in range(NUM_AGENTS)]
+        prev_deaths = [sim.agent_stat(p, STAT_DEATHS)
+                       for p in range(NUM_AGENTS)]
+        acts = rng.integers(0, ACT_HIGH,
+                            size=(NUM_AGENTS, 1)).astype(np.float32)
+        sim.set_actions(acts)
+        sim.step()
+        for pid, done in enumerate(sim.dones()):
+            if done and sim.agent_stat(pid, STAT_HP) > 0:
+                # stagnation reset: credited from the cached last-alive
+                # value, exactly one death added
+                stagnations += 1
+                assert sim.agent_stat(pid, STAT_DEATHS) == \
+                    prev_deaths[pid] + 1, (pid, sim.tick())
+                assert sim.agent_stat(pid, STAT_CUM_MIN_COMB_PROF) == \
+                    prev_cum[pid] + prev_life_min[pid], (pid, sim.tick())
+        # refresh the shadow AFTER the assertions (mirrors the shim's
+        # post-credit update; a just-respawned agent re-enters at its
+        # fresh life's min)
+        for pid in range(NUM_AGENTS):
+            if sim.agent_stat(pid, STAT_HP) > 0:
+                prev_life_min[pid] = min(
+                    sim.agent_stat(pid, STAT_COMB_LVL),
+                    sim.agent_stat(pid, STAT_PROF_LVL))
+    assert stagnations >= 1, \
+        "seed 5 no longer produces a stagnation event - seed regression?"
+
+
 def test_score_identity_and_death_accounting():
     """score(pid) == cum_min_comb_prof + current-life min; the current-life
     part is 0 exactly while the agent is dead-awaiting-respawn (hp == 0)."""

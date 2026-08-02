@@ -9,9 +9,14 @@ changes these bytes and fails loudly here. They do NOT prove physics
 correctness against upstream — the fidelity gate (tests/test_fidelity.py)
 does that.
 
-If this fails after a DELIBERATE, design-approved config change, recompute
-the constants (the test docstring in git blame documents the procedure);
-if it fails any other time, the sim contract drifted — fix the code.
+If this fails after a DELIBERATE, design-approved config change,
+recompute the constants: rebuild the wasm (`bash sim/build_sim.sh`),
+run the ``_compute`` helper below (e.g. ``uv run python -c "from
+tests.test_obs_contract import _compute; _compute()"``) and paste the
+two printed digests over the constants. The pins assume the CI
+toolchain (emsdk 6.0.5, musl libc): a different emcc/libc can change
+the bytes without any config drift. If the test fails any other time,
+the sim contract drifted — fix the code, not the constants.
 """
 
 import hashlib
@@ -33,6 +38,23 @@ TICK100_OBS_SHA256 = \
     "5aa71f8e1ac2e50fecf61fd8860d41f8b01594f96c29c8dcabfb3602052efd2c"
 # state_digest() after the same 100 ticks (FNV-1a, sim/shim_common.h)
 TICK100_STATE_DIGEST = 0x7865A5E0
+
+
+def _compute():
+    """Print fresh pin values (see the module docstring for when this is
+    legitimate). Runs the exact snapshot script the test runs."""
+    sim = NmmoSim(seed=SNAPSHOT_SEED)
+    print("TICK0_OBS_SHA256 =",
+          hashlib.sha256(sim.observations().tobytes()).hexdigest())
+    rng = np.random.default_rng(ACTION_SCRIPT_SEED)
+    for _ in range(SNAPSHOT_TICKS):
+        acts = rng.integers(0, ACT_HIGH,
+                            size=(NUM_AGENTS, 1)).astype(np.float32)
+        sim.set_actions(acts)
+        sim.step()
+    print("TICK100_OBS_SHA256 =",
+          hashlib.sha256(sim.observations().tobytes()).hexdigest())
+    print(f"TICK100_STATE_DIGEST = 0x{sim.state_digest():08X}")
 
 
 @pytest.mark.skipif(not DEFAULT_WASM_PATH.exists(),

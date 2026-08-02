@@ -1,6 +1,12 @@
-// cogame-nmmo wasm brain shim: the upstream pretrained MOBA policy served
-// through the vendored pure-C puffernet, compiled to a WASI reactor module
-// (build/moba_brain.wasm, built by sim/build_brain.sh).
+// cogame-nmmo wasm brain shim.
+//
+// NOTE (Phase N3 pending, mirrors sim/build_brain.sh): this file is
+// still the inherited moba MMONet-less puffernet harness; Phase N3
+// rewrites it around the nmmo3.c MMONet construction (conv encoder +
+// byte embedding + 4x MinGRU + 27-logit head, per-agent state reset on
+// the wire `resets` flag). Until then sim/build_brain.sh fails at the
+// compile step by design. The moba-specific commentary below describes
+// the inherited code, not the target.
 //
 // Mirrors vendored moba.c demo() inference EXACTLY:
 //   - net:  make_puffernet(weights, batch, 510, 64, 5, {7,7,3,2,2,2}, 6)

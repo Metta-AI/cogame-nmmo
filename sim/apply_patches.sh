@@ -22,12 +22,15 @@ mkdir -p "$BUILD/src-pristine" "$BUILD/src-patched"
 find "$UPSTREAM" -maxdepth 1 -type f -exec cp {} "$BUILD/src-pristine/" \;
 find "$UPSTREAM" -maxdepth 1 -type f -exec cp {} "$BUILD/src-patched/" \;
 
+# --fuzz=0: a patch that no longer applies at its exact context must
+# fail loudly, never fuzz-apply against drifted vendor source.
+
 # Pristine tree: 0001 only.
-patch -p1 -s -d "$BUILD/src-pristine" < "$PATCHES/0001-render-guard.patch"
+patch -p1 -s --fuzz=0 -d "$BUILD/src-pristine" < "$PATCHES/0001-render-guard.patch"
 
 # Patched tree: every patch, in order.
 for p in "$PATCHES"/*.patch; do
-    patch -p1 -s -d "$BUILD/src-patched" < "$p"
+    patch -p1 -s --fuzz=0 -d "$BUILD/src-patched" < "$p"
 done
 
 echo "apply_patches: OK (pristine=0001 only, patched=$(ls "$PATCHES" | wc -l | tr -d ' ') patches)"
