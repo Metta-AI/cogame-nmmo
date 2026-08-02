@@ -125,7 +125,24 @@ def test_stagnation_reset_attribution():
     zeroes the stagnation ring buffer. Random play on seed 5 was
     scanned instead: it deterministically produces a stagnation event
     (tick 808, pid 2), and the tracked shadow value proves the credit
-    is exactly the last-alive min(comb, prof)."""
+    is exactly the last-alive min(comb, prof).
+
+    DISCRIMINATION LIMIT (honest accounting): in every pinned/observed
+    event the agent's last-alive min(comb, prof) is 1 — and a fresh
+    post-respawn life's min is also 1 — so this test CANNOT tell the
+    correct credit (the cached last-alive value) from an inverted one
+    that reads the just-respawned entity's levels: both equal 1 here.
+    What it DOES pin: the stagnation branch fires (done with hp > 0),
+    adds exactly one death, and credits exactly the shadow-tracked
+    value (ruling out zero, double-counting, and cross-agent mixups).
+    A discriminating event needs an agent that levels BOTH stats
+    (last-alive min >= 2) and then goes flat for 500 alive ticks. A
+    bounded offline scan (2026-08: 4 action mixes incl. a
+    level-then-wander two-phase drive, 120 runs x 4000-5000 ticks,
+    ~510k sim ticks, ~75 stagnation events observed) found none:
+    agents at min >= 2 under random-ish play always die to attack
+    before 500 flat ticks. If such a scenario is ever found, pin it
+    here as `credit == last-alive min >= 2 != fresh-life min`."""
     sim = NmmoSim(seed=5)
     rng = np.random.default_rng(0)
     # min(comb,prof) at the end of the last tick each agent was alive —
