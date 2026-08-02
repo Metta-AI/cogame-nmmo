@@ -85,44 +85,13 @@ for f in "${VIEWER_ASSETS[@]}"; do
 done
 
 # -- staging-completeness guard ----------------------------------------------
-# Every resources/nmmo3/ path the (patched) render code references must
-# be covered by VIEWER_ASSETS: a vendor bump that starts loading a new
-# asset must fail THIS build loudly, not ship a silently thinner .data
-# that renders blank sprites. TextFormat patterns are expanded (%i ->
-# GLSL_VERSION, 100 on web; %d -> the 10-frame element loop). An
-# unrecognized new pattern falls through to the membership check and
-# fails there — extend the expansion when upstream adds one.
-referenced="$(grep -o 'resources/nmmo3/[A-Za-z0-9_.%]*' build/src-patched/nmmo3.h \
-    | sed 's|resources/nmmo3/||' | sort -u)"
-[ -n "$referenced" ] || { echo "error: no resources/nmmo3/ references found in build/src-patched/nmmo3.h - guard broken?" >&2; exit 1; }
-guard_fail=0
-for ref in $referenced; do
-    case "$ref" in
-        map_shader_%i.fs) expanded="map_shader_100.fs" ;;
-        *_%d.png)
-            expanded=""
-            for i in 0 1 2 3 4 5 6 7 8 9; do
-                expanded+="${ref/\%d/$i} "
-            done ;;
-        ManaSeedBody.ttf)
-            # Intentionally absent upstream (raylib falls back to its
-            # default font). If a vendor bump ships the file, staging it
-            # becomes a decision: fail loudly so a human makes it.
-            if [ -e "$ASSETS_SRC/ManaSeedBody.ttf" ]; then
-                echo "error: ManaSeedBody.ttf now exists in $ASSETS_SRC - decide whether to add it to VIEWER_ASSETS" >&2
-                guard_fail=1
-            fi
-            continue ;;
-        *) expanded="$ref" ;;
-    esac
-    for f in $expanded; do
-        if ! printf '%s\n' "${VIEWER_ASSETS[@]}" | grep -qxF "$f"; then
-            echo "error: nmmo3.h loads resources/nmmo3/$f but VIEWER_ASSETS does not stage it" >&2
-            guard_fail=1
-        fi
-    done
-done
-[ "$guard_fail" -eq 0 ] || exit 1
+# Logic lives in sim/viewer_asset_guard.sh (sourced function) so
+# tests/test_viewer_guard.py can exercise its failure path without an
+# emcc build; see that file's header comment for the full rationale.
+NMMO3_H=build/src-patched/nmmo3.h
+# shellcheck source=sim/viewer_asset_guard.sh
+. "$REPO_ROOT/sim/viewer_asset_guard.sh"
+viewer_asset_guard || exit 1
 
 VIEWER_EXPORTS=_viewer_load,_viewer_seek,_viewer_advance,_viewer_advance_frame,_viewer_render_phase,_viewer_tick,_viewer_total_ticks,_viewer_set_speed,_viewer_get_speed,_viewer_set_playing,_viewer_playing,_viewer_state_digest,_malloc,_free
 # Camera-follow controls exist only in the render build (they poke the
