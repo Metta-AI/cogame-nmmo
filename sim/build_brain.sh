@@ -5,11 +5,12 @@
 #
 # The weights are embedded as a generated C array (xxd -i at build time,
 # written under build/, never committed) so the wasm needs no filesystem.
-# Same STANDALONE_WASM reactor flags as sim/build_sim.sh; the brain needs
-# only ~5 MB so the 1 GB ceiling is just flag parity with the sim build.
-# NOTE (Phase N3 pending): sim/brain_shim.c is still the moba MMONet-less
-# puffernet harness; Phase N3 rewrites it around the nmmo3.c MMONet
-# construction. Until then this script fails at the compile step.
+# Same STANDALONE_WASM reactor flags as sim/build_sim.sh. Memory sizing
+# (verified against the MMONet construction, see sim/brain_shim.c header):
+# ~17.7 MB embedded weights in .data + one 17.7 MB heap Weights copy +
+# ~188 KB activations per batch-1 net (8 nets ~= 1.5 MB) ~= 37 MB total,
+# so INITIAL_MEMORY=64mb avoids growth churn; ALLOW_GROWTH + the 1 GB
+# ceiling + ABORTING_MALLOC are flag parity with the sim build.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,7 +32,7 @@ EMBED=build/nmmo3_weights_embedded.c
     printf '};\nconst unsigned int nmmo3_weights_bin_len = sizeof(nmmo3_weights_bin);\n'
 } > "$EMBED"
 
-COMMON_FLAGS=(-O2 -sSTANDALONE_WASM --no-entry
+COMMON_FLAGS=(-O2 -sSTANDALONE_WASM --no-entry -sINITIAL_MEMORY=64mb
               -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=1gb -sABORTING_MALLOC=1)
 
 emcc "${COMMON_FLAGS[@]}" -I vendor/upstream sim/brain_shim.c "$EMBED" \
