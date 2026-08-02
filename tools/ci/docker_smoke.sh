@@ -4,13 +4,9 @@
 # file:// artifact URIs. Asserts the episode completes and writes
 # results.json (with the manifest's result keys) and the replay.
 #
-# NOTE (Phase N3 pending): the player containers run
-# players.baseline_player, which is still moba-shaped until Phase N3
-# rebuilds it around the nmmo3 MMONet — this script cannot pass until
-# then, and .github/workflows/ci.yml skips the episode step (image build
-# only) with the matching NOTE. The assertions below are kept in
-# triple-sync with GameServer._results_doc and the manifest
-# results_schema NOW, so N3 only re-enables the CI step.
+# The player containers run players.baseline_player (the Phase-N3
+# MMONet brain). The assertions below are kept in triple-sync with
+# GameServer._results_doc and the manifest results_schema.
 #
 # usage: tools/ci/docker_smoke.sh [image]   (default cogame-nmmo:ci)
 set -euo pipefail

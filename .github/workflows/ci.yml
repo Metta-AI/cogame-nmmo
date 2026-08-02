@@ -54,13 +54,14 @@ jobs:
           path: build/raylib-web
           key: raylib-web-${{ hashFiles('sim/build_viewer.sh') }}
       - name: Build wasm artifacts
-        # build_brain.sh returns in Phase N3 (nmmo3 MMONet brain shim) and
-        # build_viewer.sh in Phase N4 (nmmo3 renderer viewer); until those
-        # phases land their shim sources are still moba-shaped and the
-        # scripts fail deliberately at compile.
+        # build_viewer.sh returns in Phase N4 (nmmo3 renderer viewer);
+        # until then viewer_main.c is still moba-shaped and the script
+        # fails deliberately at compile. The brain wasm is needed by
+        # tests/test_baseline.py and tests/test_scripted.py.
         run: |
           bash sim/apply_patches.sh
           bash sim/build_sim.sh
+          bash sim/build_brain.sh
       - name: Sync Python deps
         run: uv sync --frozen
       # Full suite including slow-marked tests: the whole run is fast,
@@ -80,15 +81,8 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Build image
         run: docker build --platform=linux/amd64 -t cogame-nmmo:ci .
-      # NOTE (Phase N3 pending): the episode smoke needs a working player
-      # entrypoint, and players/baseline_player is still moba-shaped until
-      # Phase N3 rebuilds it around the nmmo3 MMONet. Until then this job
-      # only proves the image builds; N3 re-enables the line below (the
-      # script's assertions are already synced to the nmmo results schema).
-      - name: Raw-Docker episode smoke (skipped until Phase N3)
-        run: |
-          echo "SKIPPED: players/baseline_player is Phase-N3 pending;" \
-               "run 'bash tools/ci/docker_smoke.sh cogame-nmmo:ci' once N3 lands."
+      - name: Raw-Docker episode smoke
+        run: bash tools/ci/docker_smoke.sh cogame-nmmo:ci
 
   # Upload a new "nmmo" version to Softmax (https://softmax.com/api).
   # Gated on green test + docker-smoke jobs (see the header comment).

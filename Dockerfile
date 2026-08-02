@@ -5,13 +5,12 @@
 # runs on the build host's native platform ($BUILDPLATFORM) — no qemu
 # emulation for the compile on ARM hosts.
 #
-# NOTE (phase status, mirrors .github/workflows/ci.yml): only
-# sim/build_sim.sh runs here for now. build_brain.sh returns in Phase N3
-# (nmmo3 MMONet brain shim + its xxd-embedded weights and the raylib
-# prefetch it doesn't need) and build_viewer.sh in Phase N4 (nmmo3
-# renderer viewer bundle + raylib web prefetch layer + viewer/dist COPY);
-# until those phases land their shim sources are still moba-shaped and
-# the scripts fail deliberately at compile.
+# NOTE (phase status, mirrors .github/workflows/ci.yml): build_sim.sh
+# and build_brain.sh (nmmo3 MMONet brain shim, xxd-embedded weights) run
+# here. build_viewer.sh returns in Phase N4 (nmmo3 renderer viewer
+# bundle + raylib web prefetch layer + viewer/dist COPY); until then
+# viewer_main.c is still moba-shaped and the script fails deliberately
+# at compile.
 #
 # Stage 2 is the linux/amd64 runtime: python:3.11-slim + locked deps via
 # uv, with the repo layout preserved at /workspace (server code resolves
@@ -20,8 +19,9 @@
 #
 # Entrypoints (Coworld manifest `run`):
 #   game            python -m cogame_nmmo.server
-#   baseline player python -m players.baseline_player   (Phase N3)
-#   random player   python -m players.random_player     (Phase N3 adapts)
+#   baseline player python -m players.baseline_player
+#   random player   python -m players.random_player
+#   scripted player python -m players.scripted_player
 #
 # Build: docker build --platform=linux/amd64 -t cogame-nmmo:local .
 
@@ -38,10 +38,9 @@ WORKDIR /src
 COPY vendor/ vendor/
 COPY sim/ sim/
 
-# apply_patches.sh runs inside the build script (idempotent). Phases
-# N3/N4 append build_brain.sh and build_viewer.sh here — see the NOTE
-# at the top of this file.
-RUN bash sim/build_sim.sh
+# apply_patches.sh runs inside the build script (idempotent). Phase N4
+# appends build_viewer.sh here — see the NOTE at the top of this file.
+RUN bash sim/build_sim.sh && bash sim/build_brain.sh
 
 
 FROM python:3.11-slim
@@ -64,6 +63,7 @@ ENV PATH="/workspace/.venv/bin:$PATH" \
 COPY server/ server/
 COPY players/ players/
 COPY --from=wasm-builder /src/build/nmmo3_sim.wasm build/
-# Phase N3 restores build/nmmo3_brain.wasm; Phase N4 restores viewer/dist/.
+COPY --from=wasm-builder /src/build/nmmo3_brain.wasm build/
+# Phase N4 restores viewer/dist/.
 
 CMD ["python", "-m", "cogame_nmmo.server"]
