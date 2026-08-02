@@ -224,21 +224,28 @@ static int brain_num_agents = 0;
 static unsigned char obs_u8[BRAIN_MAX_AGENTS][BRAIN_OBS_SIZE];
 static int act_i32[BRAIN_MAX_AGENTS][1];
 
+// brain_init(seed, num_agents) failure codes — the host maps each to an
+// honest message (players/baseline_player.py INIT_ERRORS):
+#define BRAIN_ERR_REINIT      (-1)  // already initialized in this instance
+#define BRAIN_ERR_NUM_AGENTS  (-2)  // num_agents outside 1..BRAIN_MAX_AGENTS
+#define BRAIN_ERR_WEIGHTS_LEN (-3)  // embedded blob is not nmmo3_weights.bin
+#define BRAIN_ERR_ALLOC       (-4)  // allocation failure
+
 // brain_init(seed, num_agents): build num_agents independent batch-1
 // nets. Returns the weight param count (4,430,976) so the host can
-// sanity-check the embedded blob, or -1 on failure / bad num_agents /
-// re-init. Call exactly once per instance, before any forward: a second
-// call would leak the first nets and reset recurrent state, so it is
-// rejected. (The allocation NULL checks are unreachable under
-// -sABORTING_MALLOC=1, which traps on OOM; kept as belt-and-braces.)
+// sanity-check the embedded blob, or a BRAIN_ERR_* code (< 0). Call
+// exactly once per instance, before any forward: a second call would
+// leak the first nets and reset recurrent state, so it is rejected.
+// (The allocation NULL checks are unreachable under -sABORTING_MALLOC=1,
+// which traps on OOM; kept as belt-and-braces.)
 __attribute__((export_name("brain_init")))
 int brain_init(unsigned int seed, int num_agents) {
     if (brain_num_agents != 0)
-        return -1;  // already initialized
+        return BRAIN_ERR_REINIT;
     if (num_agents < 1 || num_agents > BRAIN_MAX_AGENTS)
-        return -1;
+        return BRAIN_ERR_NUM_AGENTS;
     if (nmmo3_weights_bin_len != EXPECTED_PARAMS * sizeof(float))
-        return -1;  // embedded blob is not nmmo3_weights.bin
+        return BRAIN_ERR_WEIGHTS_LEN;
     srand(seed);  // seeds THIS module's musl rand stream (see header note)
 
     // Replicate load_weights() (puffernet.h:39-63) minus the FILE* I/O:
@@ -248,7 +255,7 @@ int brain_init(unsigned int seed, int num_agents) {
     Weights* weights = (Weights*)calloc(
         1, sizeof(Weights) + (num_weights + 7) * sizeof(float));
     if (weights == NULL)
-        return -1;
+        return BRAIN_ERR_ALLOC;
     weights->data = (float*)(weights + 1);
     memcpy(weights->data, nmmo3_weights_bin, num_weights * sizeof(float));
     weights->size = num_weights + 7;
@@ -257,24 +264,25 @@ int brain_init(unsigned int seed, int num_agents) {
         weights->idx = 0;  // nets share the weight buffer, own their state
         nets[i] = init_mmonet(weights, 1);
         if (nets[i] == NULL)
-            return -1;
+            return BRAIN_ERR_ALLOC;
     }
     brain_num_agents = num_agents;
     return (int)num_weights;
 }
 
-// 1707 uint8 obs in for one agent index.
+// 1707 uint8 obs in for one agent index (validated against the built
+// net count, same as brain_forward/brain_reset_state).
 __attribute__((export_name("brain_obs_ptr")))
 unsigned char* brain_obs_ptr(int agent_idx) {
-    if (agent_idx < 0 || agent_idx >= BRAIN_MAX_AGENTS)
+    if (agent_idx < 0 || agent_idx >= brain_num_agents)
         return NULL;
     return obs_u8[agent_idx];
 }
 
-// 1 int32 action out for one agent index.
+// 1 int32 action out for one agent index (validated likewise).
 __attribute__((export_name("brain_act_ptr")))
 int* brain_act_ptr(int agent_idx) {
-    if (agent_idx < 0 || agent_idx >= BRAIN_MAX_AGENTS)
+    if (agent_idx < 0 || agent_idx >= brain_num_agents)
         return NULL;
     return act_i32[agent_idx];
 }

@@ -33,7 +33,7 @@ import numpy as np
 from wasmtime import (Config, Engine, Func, FuncType, Linker, Module, Store,
                       ValType, WasiConfig)
 
-from .client import run_policy_main, seed_from_env
+from .client import PlayerError, run_policy_main, seed_from_env
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BRAIN_WASM_PATH = REPO_ROOT / "build" / "nmmo3_brain.wasm"
@@ -44,6 +44,15 @@ NUM_ATNS = 1              # one 26-way discrete action
 EXPECTED_PARAMS = 4_430_976  # nmmo3_weights.bin float32 count (17,723,904 B)
 
 DEFAULT_SEED = 1          # == upstream's unseeded libc rand stream
+
+# brain_init failure codes (sim/brain_shim.c BRAIN_ERR_*), mapped to
+# honest messages; a non-negative return is the loaded param count.
+INIT_ERRORS = {
+    -1: "brain already initialized in this wasm instance",
+    -2: "num_agents out of range (must be 1..32)",
+    -3: "embedded weights blob is not nmmo3_weights.bin (size mismatch)",
+    -4: "allocation failure inside the brain wasm",
+}
 
 # Engine/Module compilation cached per wasm path (one NmmoBrain per
 # process normally, but tests build several).
@@ -94,6 +103,9 @@ class NmmoBrain:
         if seed >= 1 << 31:  # u32 -> the signed i32 bit pattern wasm expects
             seed -= 1 << 32
         params = self._exports["brain_init"](self._store, seed, num_agents)
+        if params < 0:
+            detail = INIT_ERRORS.get(params, f"unknown error code {params}")
+            raise RuntimeError(f"brain_init failed: {detail}")
         if params != EXPECTED_PARAMS:
             raise RuntimeError(
                 f"brain_init reported {params} weight params, "
@@ -148,6 +160,11 @@ class BaselinePolicy:
                                wasm_path=wasm_path)
 
     def __call__(self, tick: int, obs_rows: list, resets: list) -> list:
+        if len(obs_rows) > self.brain.num_agents:
+            raise PlayerError(
+                f"seat has {len(obs_rows)} heroes, brain built for "
+                f"{self.brain.num_agents} - construct BaselinePolicy with "
+                f"num_agents >= the seat's heroes_per_seat")
         actions = []
         for i, row in enumerate(obs_rows):
             if resets[i]:

@@ -50,17 +50,27 @@ def test_forward_returns_in_range_actions():
 
 def test_brain_init_rejects_second_call():
     # re-init would leak nets and reset recurrent state; the shim
-    # returns -1 (see brain_shim.c)
+    # returns the distinct BRAIN_ERR_REINIT code (see brain_shim.c)
     brain = NmmoBrain(seed=1)
     assert brain._exports["brain_init"](brain._store, 1, 8) == -1
 
 
 def test_brain_init_rejects_bad_num_agents():
-    # the shim rejects out-of-range net counts; the host constructor
-    # surfaces that as its param-count RuntimeError
+    # the shim returns the distinct BRAIN_ERR_NUM_AGENTS code and the
+    # host maps it to an honest message (not the param-count complaint)
     for bad in (0, -1, 33):
-        with pytest.raises(RuntimeError, match="weight params"):
+        with pytest.raises(RuntimeError,
+                           match="num_agents out of range"):
             NmmoBrain(seed=1, num_agents=bad)
+
+
+def test_policy_rejects_seat_with_more_heroes_than_brains():
+    from players.client import PlayerError
+    policy = BaselinePolicy(seed=1, num_agents=2)
+    rows = [bytes(OBS_SIZE)] * 3
+    with pytest.raises(PlayerError,
+                       match="seat has 3 heroes, brain built for 2"):
+        policy(0, rows, [False] * 3)
 
 
 def test_forward_and_reset_input_validation():
@@ -195,6 +205,8 @@ async def test_baseline_policy_plays_ws_episode(tmp_path):
 # -- behavioral: baseline vs random on score ---------------------------------
 
 BEHAVIORAL_TICKS = 2000
+# Episode cached by key so every behavioral assertion shares one run
+# (guard style mirrored in tests/test_scripted.py).
 _behavioral_cache: dict[str, dict] = {}
 
 
@@ -205,7 +217,7 @@ def run_baseline_vs_random_episode():
     agents 4-7 play uniform random. Returns per-group raw cumulative
     scores, deaths, and per-life means (score/(deaths+1) — lives = ended
     lives + the current one)."""
-    if _behavioral_cache:
+    if "stats" in _behavioral_cache:
         return _behavioral_cache["stats"]
     sim = NmmoSim(seed=11)
     brain = NmmoBrain(seed=1, num_agents=4)
