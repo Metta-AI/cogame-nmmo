@@ -88,8 +88,9 @@ expected = {
 }
 assert set(results) == expected, f"results keys drifted: {sorted(set(results) ^ expected)}"
 assert len(results["scores"]) == 2, results["scores"]
-# scores are raw values, higher = better; everyone starts alive at
-# min(comb,prof) = 1, so a live episode always produces a positive total
+# scores are mean min(comb,prof) per life, summed over the seat's
+# agents (higher = better): every life banks min >= 1, so each agent's
+# mean is >= 1 and a 4-hero seat in a live episode scores >= 4
 assert all(s >= 0 for s in results["scores"]), results["scores"]
 assert sum(results["scores"]) >= 1, results["scores"]
 assert results["end_reason"] in ("tick_cap", "wall_clock"), results["end_reason"]

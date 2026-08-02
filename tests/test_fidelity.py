@@ -24,6 +24,8 @@ future patch. A failure here means a patch changed in-episode physics: fix
 the patch, never this test.
 """
 
+import os
+
 import numpy as np
 import pytest
 
@@ -32,10 +34,18 @@ from cogame_nmmo.sim import (ACT_HIGH, DEFAULT_WASM_PATH, NUM_AGENTS,
 
 TICKS = 5000
 
+NOT_BUILT = "sim wasm not built - run sim/build_sim.sh first"
 
-@pytest.mark.skipif(not PRISTINE_WASM_PATH.exists(),
-                    reason="run sim/build_sim.sh first")
+
 def test_patched_matches_pristine():
+    # Same COGAME_REQUIRE_WASM_BUILD rule as tests/test_viewer.py: the
+    # local-convenience skip must never fire where the artifacts were
+    # just built (CI sets the env var after its build step), or the
+    # acceptance gate would silently stop gating.
+    if not PRISTINE_WASM_PATH.exists():
+        if os.environ.get("COGAME_REQUIRE_WASM_BUILD"):
+            pytest.fail(NOT_BUILT + " (COGAME_REQUIRE_WASM_BUILD is set)")
+        pytest.skip(NOT_BUILT)
     patched = NmmoSim(seed=1, wasm_path=DEFAULT_WASM_PATH)
     pristine = NmmoSim(seed=1, wasm_path=PRISTINE_WASM_PATH)
 

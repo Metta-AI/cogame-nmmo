@@ -49,9 +49,10 @@ RECORD_TICKS = 1000
 
 
 def _skip_or_fail_not_built():
-    """Same CI rule as the fidelity gate (tests/test_fidelity.py): with
-    COGAME_REQUIRE_WASM_BUILD set, a missing build artifact is a
-    failure, never a silent skip."""
+    """Same COGAME_REQUIRE_WASM_BUILD rule as the fidelity gate
+    (tests/test_fidelity.py): with the env var set (as CI sets it after
+    its build step), a missing build artifact is a failure, never a
+    silent skip."""
     if os.environ.get("COGAME_REQUIRE_WASM_BUILD"):
         pytest.fail(NOT_BUILT + " (COGAME_REQUIRE_WASM_BUILD is set)")
     pytest.skip(NOT_BUILT)
@@ -69,8 +70,10 @@ def test_build_viewer_outputs_exist():
 def test_viewer_bundle_excludes_policy_weights():
     """The .data preload must carry the ~14 MB render assets but never
     nmmo3_weights.bin (17.7 MB the renderer never reads): the staged-
-    asset-dir rule in sim/build_viewer.sh. A weights regression would
-    show up as the .data ballooning past the raw asset size."""
+    asset-dir rule in sim/build_viewer.sh. Two layers: a size bound
+    (weights would balloon .data past the raw asset size) and a direct
+    byte-absence scan - three 4 KB probes sampled from the weights file
+    must not appear anywhere in the .data bytes."""
     data = VIEWER_DIST / "nmmo3_viewer.data"
     if not data.exists():
         _skip_or_fail_not_built()
@@ -81,6 +84,20 @@ def test_viewer_bundle_excludes_policy_weights():
         f".data is {size} bytes - looks like the weights got preloaded"
     # sanity floor: the merged sheet alone is ~1 MB, all assets ~14 MB
     assert size > 10_000_000, f".data is only {size} bytes - assets missing?"
+
+    # byte-absence: probes from the start, middle, and end of the
+    # weights blob (trained float32 bytes - high entropy, so a hit can
+    # only mean the weights really are embedded)
+    data_bytes = data.read_bytes()
+    wsize = weights.stat().st_size
+    with weights.open("rb") as fh:
+        for off in (4096, wsize // 2, wsize - 8192):
+            fh.seek(off)
+            probe = fh.read(4096)
+            assert len(set(probe)) > 64, \
+                f"degenerate weights probe at {off} - pick another offset"
+            assert probe not in data_bytes, \
+                f"weights bytes (offset {off}) found inside nmmo3_viewer.data"
 
 
 async def _record_replay(tmp_path: Path):
