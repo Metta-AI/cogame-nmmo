@@ -698,9 +698,9 @@ class GameServer:
 DEFAULT_VIEWER_DIST = \
     Path(__file__).resolve().parents[2] / "viewer" / "dist"
 
-# Placeholder viewer page served when the Phase 4 wasm re-sim viewer
-# bundle is absent: fetches /replay-data, parses the binary header
-# client-side, and renders the header info.
+# Placeholder viewer page served when the wasm re-sim viewer bundle is
+# absent (emscripten build not run): fetches /replay-data, parses the
+# binary header client-side, and renders the header info.
 REPLAY_PLACEHOLDER_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -716,7 +716,7 @@ REPLAY_PLACEHOLDER_HTML = """<!DOCTYPE html>
 <h1>cogame-nmmo replay</h1>
 <dl id="info">loading /replay-data ...</dl>
 <p class="note">Placeholder viewer: the full wasm re-simulation viewer
-arrives in Phase 4.</p>
+was not bundled (run sim/build_viewer.sh).</p>
 <script>
 async function load() {
   const resp = await fetch("/replay-data");

@@ -1,16 +1,11 @@
 # cogame-nmmo Coworld image: game server + bundled players in one image.
 #
 # Stage 1 (wasm-builder) compiles the vendored PufferLib nmmo3 sim with
-# emscripten. Wasm artifacts are architecture-independent, so this stage
-# runs on the build host's native platform ($BUILDPLATFORM) — no qemu
-# emulation for the compile on ARM hosts.
-#
-# NOTE (phase status, mirrors .github/workflows/ci.yml): build_sim.sh
-# and build_brain.sh (nmmo3 MMONet brain shim, xxd-embedded weights) run
-# here. build_viewer.sh returns in Phase N4 (nmmo3 renderer viewer
-# bundle + raylib web prefetch layer + viewer/dist COPY); until then
-# viewer_main.c is still moba-shaped and the script fails deliberately
-# at compile.
+# emscripten: sim wasm (wasmtime host), brain wasm (MMONet baseline,
+# xxd-embedded weights), and the browser replay-viewer bundle. Wasm
+# artifacts are architecture-independent, so this stage runs on the
+# build host's native platform ($BUILDPLATFORM) — no qemu emulation for
+# the compile on ARM hosts.
 #
 # Stage 2 is the linux/amd64 runtime: python:3.11-slim + locked deps via
 # uv, with the repo layout preserved at /workspace (server code resolves
@@ -35,12 +30,30 @@ RUN apt-get update && \
 
 WORKDIR /src
 
+# Prefetch the raylib web build into the exact cache location
+# sim/build_viewer.sh expects, as its own layer so source edits never
+# re-download. URL/sha MUST stay in sync with sim/build_viewer.sh; if
+# they drift, build_viewer.sh just re-fetches (correct, slower).
+ARG RAYLIB_ZIP_URL="https://github.com/raysan5/raylib/releases/download/5.5/raylib-5.5_webassembly.zip"
+ARG RAYLIB_ZIP_SHA256="798b6bea650e78a60fe49f106a15d92ea4e33efd3aa1b3efa34b0438a14bbf2c"
+RUN mkdir -p build && \
+    curl -fsSL --retry 3 "$RAYLIB_ZIP_URL" -o /tmp/raylib-web.zip && \
+    echo "$RAYLIB_ZIP_SHA256  /tmp/raylib-web.zip" | shasum -a 256 -c - && \
+    (cd build && unzip -q /tmp/raylib-web.zip && \
+     mv raylib-5.5_webassembly raylib-web && \
+     printf '%s\n' "$RAYLIB_ZIP_SHA256" > raylib-web/.zip-sha256) && \
+    rm /tmp/raylib-web.zip
+
 COPY vendor/ vendor/
 COPY sim/ sim/
+COPY viewer/index.html viewer/index.html
 
-# apply_patches.sh runs inside the build script (idempotent). Phase N4
-# appends build_viewer.sh here — see the NOTE at the top of this file.
-RUN bash sim/build_sim.sh && bash sim/build_brain.sh
+# apply_patches.sh runs inside build_sim.sh and build_viewer.sh (and is
+# idempotent); build_brain.sh compiles the pristine vendor tree directly
+# (puffernet + weights need no patches).
+RUN bash sim/build_sim.sh && \
+    bash sim/build_brain.sh && \
+    bash sim/build_viewer.sh
 
 
 FROM python:3.11-slim
@@ -64,6 +77,6 @@ COPY server/ server/
 COPY players/ players/
 COPY --from=wasm-builder /src/build/nmmo3_sim.wasm build/
 COPY --from=wasm-builder /src/build/nmmo3_brain.wasm build/
-# Phase N4 restores viewer/dist/.
+COPY --from=wasm-builder /src/viewer/dist/ viewer/dist/
 
 CMD ["python", "-m", "cogame_nmmo.server"]

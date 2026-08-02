@@ -54,19 +54,25 @@ jobs:
           path: build/raylib-web
           key: raylib-web-${{ hashFiles('sim/build_viewer.sh') }}
       - name: Build wasm artifacts
-        # build_viewer.sh returns in Phase N4 (nmmo3 renderer viewer);
-        # until then viewer_main.c is still moba-shaped and the script
-        # fails deliberately at compile. The brain wasm is needed by
-        # tests/test_baseline.py and tests/test_scripted.py.
+        # The brain wasm is needed by tests/test_baseline.py and
+        # tests/test_scripted.py; the viewer build feeds
+        # tests/test_viewer.py's headless node re-sim check.
         run: |
           bash sim/apply_patches.sh
           bash sim/build_sim.sh
           bash sim/build_brain.sh
+          bash sim/build_viewer.sh
       - name: Sync Python deps
         run: uv sync --frozen
       # Full suite including slow-marked tests: the whole run is fast,
       # and tests/test_fidelity.py is THE acceptance gate for this repo.
+      # COGAME_REQUIRE_WASM_BUILD turns the local-convenience "viewer not
+      # built" skips (tests/test_viewer.py) into failures: in CI the
+      # artifacts were just built, so a skip here would mean the gate
+      # silently stopped gating.
       - name: Run tests
+        env:
+          COGAME_REQUIRE_WASM_BUILD: "1"
         run: uv run pytest -v
 
   # Packaging smoke: the production image builds and a containerized
