@@ -1,4 +1,4 @@
-// cogame-moba wasm brain shim: the upstream pretrained MOBA policy served
+// cogame-nmmo wasm brain shim: the upstream pretrained MOBA policy served
 // through the vendored pure-C puffernet, compiled to a WASI reactor module
 // (build/moba_brain.wasm, built by sim/build_brain.sh).
 //

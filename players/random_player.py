@@ -1,4 +1,4 @@
-"""Uniform-random cogame-moba player: ``python -m players.random_player``.
+"""Uniform-random cogame-nmmo player: ``python -m players.random_player``.
 
 Every tick, every hero plays a uniform-random action over the sim's
 MultiDiscrete space. ``COGAME_PLAYER_SEED`` (optional) seeds the numpy
@@ -15,7 +15,7 @@ from .client import run_policy_main, seed_from_env
 
 # MultiDiscrete action highs (exclusive), per column: vel_y, vel_x,
 # target-filter, use_q, use_w, use_e. Duplicated from
-# cogame_moba.defaults.ACT_HIGH (tested equal) so players/ stays
+# cogame_nmmo.defaults.ACT_HIGH (tested equal) so players/ stays
 # importable without the server package.
 ACT_HIGH = (7, 7, 3, 2, 2, 2)
 ACTIONS_PER_HERO = len(ACT_HIGH)

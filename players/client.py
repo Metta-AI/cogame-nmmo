@@ -1,6 +1,6 @@
-"""Reusable async player harness for cogame-moba websocket seats.
+"""Reusable async player harness for cogame-nmmo websocket seats.
 
-Speaks the server's lockstep wire protocol (see ``cogame_moba.server``),
+Speaks the server's lockstep wire protocol (see ``cogame_nmmo.server``),
 one JSON text message per tick each way:
 
     server -> player  {"tick": t, "obs": ["<base64 510B>", ... per hero]}

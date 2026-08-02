@@ -75,7 +75,7 @@ def fetch_all_rows(token):
                 "Authorization": f"Bearer {token}",
                 # The site's edge blocks python's default "Python-urllib/x.y"
                 # User-Agent with a 403 (verified 2026-07-31); any explicit UA passes.
-                "User-Agent": "cogame-moba-ci/next_coworld_version",
+                "User-Agent": "cogame-nmmo-ci/next_coworld_version",
             },
         )
         batch = _fetch_json(req)

@@ -1,9 +1,9 @@
-"""Baseline cogame-moba player: ``python -m players.baseline_player``.
+"""Baseline cogame-nmmo player: ``python -m players.baseline_player``.
 
 Runs the upstream pretrained policy (vendored moba_weights.bin) through
 build/moba_brain.wasm — puffernet compiled to wasm, weights embedded —
 hosted via wasmtime exactly like the sim host (module cache,
-``_initialize`` call, memory-growth stub; see cogame_moba.sim.MobaSim).
+``_initialize`` call, memory-growth stub; see cogame_nmmo.sim.MobaSim).
 
 One wasm instance holds 10 independent batch-1 nets, one per possible
 agent index, each with its own MinGRU recurrent state. The policy maps

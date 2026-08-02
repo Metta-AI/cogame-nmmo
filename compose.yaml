@@ -4,14 +4,14 @@
 # Dockerfile); the manifest `run` command selects the role entrypoint.
 services:
   game:
-    image: cogame-moba-game:latest
+    image: cogame-nmmo-game:latest
     platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
       network: host
   player:
-    image: cogame-moba-player:latest
+    image: cogame-nmmo-player:latest
     platform: linux/amd64
     build:
       context: .

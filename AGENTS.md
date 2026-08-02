@@ -20,14 +20,15 @@ demonstrates is `docs/PORTING.md`.
 
 ## Where things live
 
-- Env-physics config values (vision_range, agent_speed, reward weights)
-  mirror upstream `config/moba.ini` + `binding.c` and live in
-  `sim/shim.c` (`moba_init`). Server-contract defaults (max_ticks, no-op
-  action, seat/team topology) live in `server/cogame_moba/defaults.py`.
-  Keep the upstream citations next to the values.
-- The 510-byte obs and `[7,7,3,2,2,2]` action encodings are opaque
+- Env-physics config values (world/entity counts, reward weights, obs
+  windows) mirror upstream `config/nmmo3.ini` [env] + the `nmmo3.c` demo
+  struct and live in `sim/shim_common.h` (`nmmo_configure`).
+  Server-contract defaults (max_ticks, no-op action `[4]`, seat topology)
+  live in `server/cogame_nmmo/defaults.py`. Keep the upstream citations
+  next to the values.
+- The 1707-byte obs and 26-way discrete action encodings are opaque
   contracts — transport them verbatim, never re-encode.
-- Results keys are a CLOSED schema: `server/cogame_moba/server.py`
+- Results keys are a CLOSED schema: `server/cogame_nmmo/server.py`
   `_results_doc` and the manifest template `results_schema` must list
   exactly the same keys. Adding a results field means updating both (and
   `tools/ci/docker_smoke.sh`'s expected-keys set).
@@ -36,9 +37,9 @@ demonstrates is `docs/PORTING.md`.
 
 ```sh
 bash sim/apply_patches.sh   # vendor + patches -> build/src-{pristine,patched}
-bash sim/build_sim.sh       # -> build/moba_sim.wasm, build/moba_sim_pristine.wasm
-bash sim/build_brain.sh     # -> build/moba_brain.wasm (needs xxd)
-bash sim/build_viewer.sh    # -> viewer/dist/ + build/viewer_core.* (downloads pinned raylib)
+bash sim/build_sim.sh       # -> build/nmmo3_sim.wasm, build/nmmo3_sim_pristine.wasm
+bash sim/build_brain.sh     # -> build/nmmo3_brain.wasm (needs xxd; Phase N3 rewrite pending)
+bash sim/build_viewer.sh    # -> viewer/dist/ + build/viewer_core.* (Phase N4 rewrite pending)
 ```
 
 `build/`, `dist/`, and `viewer/dist/` are gitignored build outputs. The

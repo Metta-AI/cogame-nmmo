@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from cogame_moba.sim import ACT_HIGH, NOOP_ACTION, MobaSim
+from cogame_nmmo.sim import ACT_HIGH, NOOP_ACTION, MobaSim
 
 
 def test_step_shapes():

@@ -1,3 +1,11 @@
+# Inherited cogame-moba suite: exercises the moba-shaped modules this fork
+# has not adapted yet. Skipped (not deleted) pending Phase N3 (players),
+# which replaces it — see docs/plans/2026-08-02-cogame-nmmo-implementation.md.
+import pytest
+
+pytest.skip("moba-specific suite pending Phase N3 (players) rewrite",
+            allow_module_level=True)
+
 """Tests for the baseline player (Task 3.2): wasm puffernet brain.
 
 Unit tests exercise build/moba_brain.wasm directly (load, valid actions,
@@ -12,8 +20,8 @@ import json
 import numpy as np
 import pytest
 
-from cogame_moba import defaults
-from cogame_moba.sim import MobaSim
+from cogame_nmmo import defaults
+from cogame_nmmo.sim import MobaSim
 from players.baseline_player import (EXPECTED_PARAMS, NUM_ATNS, NUM_BRAINS,
                                      OBS_SIZE, BaselinePolicy, MobaBrain)
 from players.client import play_episode

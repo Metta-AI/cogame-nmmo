@@ -1,7 +1,7 @@
 [project]
-name = "cogame-moba"
+name = "cogame-nmmo"
 version = "0.1.0"
-description = "Coworld game running PufferLib's Ocean MOBA with bit-exact obs/action/physics via a wasm-compiled vendored sim"
+description = "Coworld game running PufferLib's Ocean NMMO3 with bit-exact obs/action/physics via a wasm-compiled vendored sim"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,7 +15,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["server/cogame_moba", "players"]
+packages = ["server/cogame_nmmo", "players"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -28,7 +28,7 @@ markers = [
 dev = [
     # Pinned exactly: server code carries version-specific workarounds for
     # this certifier (the legacy /replay probe and the /global first-message
-    # probe — see the coworld<=0.1.34 comments in server/cogame_moba/
+    # probe — see the coworld<=0.1.34 comments in server/cogame_nmmo/
     # server.py). Bump deliberately and re-run `coworld certify`.
     "coworld==0.1.34",
     "pytest>=9.1.1",

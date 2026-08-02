@@ -1,4 +1,4 @@
-// cogame-moba wasm shim around the vendored Puffer MOBA sim.
+// cogame-nmmo wasm shim around the vendored Puffer MOBA sim.
 //
 // Compiled twice by sim/build_sim.sh:
 //   - against build/src-patched  -> build/moba_sim.wasm           (production)

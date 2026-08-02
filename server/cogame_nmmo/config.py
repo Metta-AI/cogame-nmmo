@@ -142,7 +142,7 @@ class GameConfig:
         """Parse a config from a local ``file://`` URI or plain path.
 
         Local-only convenience (tests, dev). The server reads
-        ``COGAME_CONFIG_URI`` through :mod:`cogame_moba.uris`, which also
+        ``COGAME_CONFIG_URI`` through :mod:`cogame_nmmo.uris`, which also
         supports http(s).
         """
         path = uri.removeprefix("file://")

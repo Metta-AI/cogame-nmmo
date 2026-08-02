@@ -28,7 +28,7 @@ never this test.
 import numpy as np
 import pytest
 
-from cogame_moba.sim import (ACT_HIGH, DEFAULT_WASM_PATH, PRISTINE_WASM_PATH,
+from cogame_nmmo.sim import (ACT_HIGH, DEFAULT_WASM_PATH, PRISTINE_WASM_PATH,
                              MobaSim)
 
 TICKS = 5000

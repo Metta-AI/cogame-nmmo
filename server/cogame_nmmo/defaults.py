@@ -29,7 +29,7 @@ NUM_TEAMS = 2
 ACTIONS_PER_HERO = 6
 
 # MultiDiscrete action space highs (exclusive), per column: vel_y, vel_x,
-# target-filter, use_q, use_w, use_e. Mirrors cogame_moba.sim.ACT_HIGH
+# target-filter, use_q, use_w, use_e. Mirrors cogame_nmmo.sim.ACT_HIGH
 # (tested equal); duplicated so transport code needs no wasmtime import.
 ACT_HIGH = (7, 7, 3, 2, 2, 2)
 # No-op: center velocity (3,3 -> 0,0), scan-all filter, no skills.

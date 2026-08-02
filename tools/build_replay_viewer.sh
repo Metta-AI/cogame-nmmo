@@ -32,7 +32,7 @@ fi
 rm -rf "${output_dir}"
 mkdir -p "${output_dir}"
 
-image_tag="cogame-moba-viewer-build:$$"
+image_tag="cogame-nmmo-viewer-build:$$"
 container_id=""
 cleanup() {
   if [[ -n "${container_id}" ]]; then

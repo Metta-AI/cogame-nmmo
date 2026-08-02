@@ -1,4 +1,4 @@
-"""cogame-moba player clients.
+"""cogame-nmmo player clients.
 
 - ``players.client``: reusable async websocket harness (URL from env,
   obs decode, action send, bounded reconnects).

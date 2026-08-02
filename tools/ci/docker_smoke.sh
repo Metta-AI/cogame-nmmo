@@ -4,16 +4,16 @@
 # file:// artifact URIs. Asserts the episode completes and writes
 # results.json (with the manifest's result keys) and the replay.
 #
-# usage: tools/ci/docker_smoke.sh [image]   (default cogame-moba:ci)
+# usage: tools/ci/docker_smoke.sh [image]   (default cogame-nmmo:ci)
 set -euo pipefail
 
-image="${1:-cogame-moba:ci}"
+image="${1:-cogame-nmmo:ci}"
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/moba-smoke.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/nmmo-smoke.XXXXXX")"
 run_id="$$"
 
 cleanup() {
-  docker ps -aq --filter "name=moba-smoke-${run_id}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker ps -aq --filter "name=nmmo-smoke-${run_id}" | xargs -r docker rm -f >/dev/null 2>&1 || true
   rm -rf "${work_dir}"
 }
 trap cleanup EXIT
@@ -34,8 +34,8 @@ chmod 777 "${work_dir}"
 
 docker network inspect coworld-local >/dev/null 2>&1 || docker network create coworld-local
 
-docker run -d --name "moba-smoke-${run_id}-game" \
-  --network coworld-local --network-alias "moba-smoke-${run_id}" \
+docker run -d --name "nmmo-smoke-${run_id}-game" \
+  --network coworld-local --network-alias "nmmo-smoke-${run_id}" \
   -e COGAME_HOST=0.0.0.0 -e COGAME_PORT=8080 \
   -e COGAME_CONFIG_URI=file:///coworld/config.json \
   -e COGAME_RESULTS_URI=file:///coworld/results.json \
@@ -45,26 +45,26 @@ docker run -d --name "moba-smoke-${run_id}-game" \
   "${image}" >/dev/null
 
 for slot in 0 1; do
-  docker run -d --name "moba-smoke-${run_id}-p${slot}" --network coworld-local \
-    -e COWORLD_PLAYER_WS_URL="ws://moba-smoke-${run_id}:8080/player?slot=${slot}&token=token-${slot}" \
+  docker run -d --name "nmmo-smoke-${run_id}-p${slot}" --network coworld-local \
+    -e COWORLD_PLAYER_WS_URL="ws://nmmo-smoke-${run_id}:8080/player?slot=${slot}&token=token-${slot}" \
     "${image}" python -m players.baseline_player >/dev/null
 done
 
 echo "waiting for the episode (game container exit) ..."
 deadline=$((SECONDS + 300))
-while docker ps -q --filter "name=moba-smoke-${run_id}-game" | grep -q .; do
+while docker ps -q --filter "name=nmmo-smoke-${run_id}-game" | grep -q .; do
   if (( SECONDS > deadline )); then
     echo "FAIL: game container did not exit within 300s" >&2
-    docker logs "moba-smoke-${run_id}-game" 2>&1 | tail -30 >&2
+    docker logs "nmmo-smoke-${run_id}-game" 2>&1 | tail -30 >&2
     exit 1
   fi
   sleep 2
 done
 
-exit_code="$(docker inspect -f '{{.State.ExitCode}}' "moba-smoke-${run_id}-game")"
+exit_code="$(docker inspect -f '{{.State.ExitCode}}' "nmmo-smoke-${run_id}-game")"
 if [[ "${exit_code}" != "0" ]]; then
   echo "FAIL: game container exited ${exit_code}" >&2
-  docker logs "moba-smoke-${run_id}-game" 2>&1 | tail -30 >&2
+  docker logs "nmmo-smoke-${run_id}-game" 2>&1 | tail -30 >&2
   exit 1
 fi
 

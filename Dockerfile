@@ -1,6 +1,6 @@
-# cogame-moba Coworld image: game server + bundled players in one image.
+# cogame-nmmo Coworld image: game server + bundled players in one image.
 #
-# Stage 1 (wasm-builder) compiles the vendored PufferLib moba sim with
+# Stage 1 (wasm-builder) compiles the vendored PufferLib nmmo3 sim with
 # emscripten: sim wasm (wasmtime host), brain wasm (baseline policy), and
 # the browser replay-viewer bundle. Wasm artifacts are architecture-
 # independent, so this stage runs on the build host's native platform
@@ -12,12 +12,12 @@
 # is NOT pip-installed into site-packages).
 #
 # Entrypoints (Coworld manifest `run`):
-#   game            python -m cogame_moba.server
+#   game            python -m cogame_nmmo.server
 #   baseline player python -m players.baseline_player
 #   random player   python -m players.random_player
 #   scripted player python -m players.scripted_player
 #
-# Build: docker build --platform=linux/amd64 -t cogame-moba:local .
+# Build: docker build --platform=linux/amd64 -t cogame-nmmo:local .
 
 # Pin matches the emcc used for local builds (vendor/UPSTREAM.md: 6.0.5).
 FROM --platform=$BUILDPLATFORM emscripten/emsdk:6.0.5 AS wasm-builder
@@ -74,7 +74,7 @@ ENV PATH="/workspace/.venv/bin:$PATH" \
 
 COPY server/ server/
 COPY players/ players/
-COPY --from=wasm-builder /src/build/moba_sim.wasm /src/build/moba_brain.wasm build/
+COPY --from=wasm-builder /src/build/nmmo3_sim.wasm /src/build/nmmo3_brain.wasm build/
 COPY --from=wasm-builder /src/viewer/dist/ viewer/dist/
 
-CMD ["python", "-m", "cogame_moba.server"]
+CMD ["python", "-m", "cogame_nmmo.server"]

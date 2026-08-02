@@ -28,7 +28,7 @@ Replay mode: when ``COGAME_LOAD_REPLAY_URI`` is set, no episode runs;
 the recorded replay is served at ``GET /replay-data`` (raw bytes) and
 ``GET /client/replay`` (viewer page) and the process stays up.
 
-Entry point: ``python -m cogame_moba.server``. Binds ``COGAME_HOST``/
+Entry point: ``python -m cogame_nmmo.server``. Binds ``COGAME_HOST``/
 ``COGAME_PORT`` (default 0.0.0.0:8080).
 """
 
@@ -75,14 +75,14 @@ GLOBAL_CLIENT_HTML = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>cogame-moba</title>
+<title>cogame-nmmo</title>
 <style>
   body { font-family: ui-monospace, monospace; margin: 2rem; }
   #log { white-space: pre-wrap; }
 </style>
 </head>
 <body>
-<h1>cogame-moba live viewer</h1>
+<h1>cogame-nmmo live viewer</h1>
 <div id="log">connecting to /global ...</div>
 <script>
 const log = document.getElementById("log");
@@ -98,9 +98,9 @@ ws.onclose = () => { log.textContent += "\\n[closed]"; };
 
 PLAYER_CLIENT_HTML = """<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>cogame-moba seat</title></head>
+<head><meta charset="utf-8"><title>cogame-nmmo seat</title></head>
 <body style="font-family: ui-monospace, monospace; margin: 2rem;">
-<h1>cogame-moba</h1>
+<h1>cogame-nmmo</h1>
 <p>Seat <span id="slot"></span> is played over the websocket protocol
 (<code>GET /player?slot=N&amp;token=T</code>, see docs/PROTOCOL.md);
 this page only confirms the seat credential is valid.</p>
@@ -666,7 +666,7 @@ REPLAY_PLACEHOLDER_HTML = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>cogame-moba replay</title>
+<title>cogame-nmmo replay</title>
 <style>
   body { font-family: ui-monospace, monospace; margin: 2rem; }
   dt { font-weight: bold; margin-top: .6rem; }
@@ -674,7 +674,7 @@ REPLAY_PLACEHOLDER_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>cogame-moba replay</h1>
+<h1>cogame-nmmo replay</h1>
 <dl id="info">loading /replay-data ...</dl>
 <p class="note">Placeholder viewer: the full wasm re-simulation viewer
 arrives in Phase 4.</p>
@@ -799,7 +799,7 @@ async def async_main() -> int:
         await runner.setup()
         site = web.TCPSite(runner, host, port)
         await site.start()
-        print(f"cogame-moba replay mode on {host}:{port} "
+        print(f"cogame-nmmo replay mode on {host}:{port} "
               f"({len(replay_bytes)} replay bytes)", file=sys.stderr)
         await asyncio.Event().wait()  # serve until the process is stopped
         return 0
@@ -820,7 +820,7 @@ async def async_main() -> int:
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
-    print(f"cogame-moba serving on {host}:{port} "
+    print(f"cogame-nmmo serving on {host}:{port} "
           f"({config.num_seats} seats x {config.heroes_per_seat} heroes)",
           file=sys.stderr)
     result = await server.run_episode()

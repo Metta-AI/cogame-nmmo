@@ -1,3 +1,11 @@
+# Inherited cogame-moba suite: exercises the moba-shaped modules this fork
+# has not adapted yet. Skipped (not deleted) pending Phase N3 (players),
+# which replaces it — see docs/plans/2026-08-02-cogame-nmmo-implementation.md.
+import pytest
+
+pytest.skip("moba-specific suite pending Phase N3 (players) rewrite",
+            allow_module_level=True)
+
 """Tests for the player client library and random player (Task 3.1).
 
 Real episodes against the in-process GameServer (fixtures reused from
@@ -14,8 +22,8 @@ import pytest
 from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestServer
 
-from cogame_moba import defaults
-from cogame_moba.replay import Replay
+from cogame_nmmo import defaults
+from cogame_nmmo.replay import Replay
 from players import client, random_player
 from players.client import PlayerError, play_episode
 

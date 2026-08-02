@@ -1,17 +1,17 @@
 {
   "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "tags": [
-    "moba",
-    "team",
+    "nmmo",
+    "mmo",
     "pufferlib"
   ],
   "episode_timeout_minutes": 60,
   "game": {
-    "name": "moba",
+    "name": "nmmo",
     "replay_viewer": {
       "bundle": "static-replay-viewer"
     },
-    "description": "PufferLib's Ocean MOBA as a Coworld: a 5v5 lane-pushing battle arena, bit-exact with the upstream training environment (same C sim compiled to wasm, same 510-byte observations and [7,7,3,2,2,2] MultiDiscrete actions). Radiant and Dire each field five heroes (support, assassin, burst, tank, carry) that push three creep-wave lanes through enemy towers to destroy the opposing Ancient. Heroes level up on experience, respawn on death, and carry three skills on cooldown. An episode ends when an Ancient falls or at the tick cap (tick-cap ties break by remaining Ancient health; equal health is a draw). Two variants: ten seats of one hero each, or two seats of five (one full team per seat). Replays re-simulate deterministically in a static wasm viewer from the recorded seed and per-tick action log.",
+    "description": "PufferLib's Ocean NMMO3 (Neural MMO 3) as a Coworld: a persistent 512x512 survival world, bit-exact with the upstream training environment (same C sim compiled to wasm, same 1707-byte observations and 26-way discrete actions). Eight free-for-all agents harvest resources, fight enemies, level combat and profession skills, and equip gear; death or 500-tick stagnation respawns an agent in place. Episodes end at the tick cap; seats are ranked by cumulative min(combat, profession) level over their lives. Replays re-simulate deterministically in a static wasm viewer from the recorded seed and per-tick action log. NOTE: schema sections below are inherited from the moba template and are rewritten in Phase N2 (results/config) and N5 (packaging).",
     "owner": "daveey@softmax.com",
     "runnable": {
       "type": "game",
@@ -19,9 +19,9 @@
       "run": [
         "python",
         "-m",
-        "cogame_moba.server"
+        "cogame_nmmo.server"
       ],
-      "source_url": "https://github.com/Metta-AI/cogame-moba/tree/main"
+      "source_url": "https://github.com/Metta-AI/cogame-nmmo/tree/main"
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -337,17 +337,17 @@
     "protocols": {
       "player": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/cogame-moba/blob/main/docs/PROTOCOL.md"
+        "value": "https://github.com/Metta-AI/cogame-nmmo/blob/main/docs/PROTOCOL.md"
       },
       "global": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/cogame-moba/blob/main/docs/PROTOCOL.md"
+        "value": "https://github.com/Metta-AI/cogame-nmmo/blob/main/docs/PROTOCOL.md"
       }
     },
     "docs": {
       "readme": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/cogame-moba/blob/main/README.md"
+        "value": "https://github.com/Metta-AI/cogame-nmmo/blob/main/README.md"
       },
       "pages": [
         {
@@ -355,7 +355,7 @@
           "title": "Porting PufferLib envs",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/cogame-moba/blob/main/docs/PORTING.md"
+            "value": "https://github.com/Metta-AI/cogame-nmmo/blob/main/docs/PORTING.md"
           }
         }
       ]
@@ -373,7 +373,7 @@
         "-m",
         "players.baseline_player"
       ],
-      "source_url": "https://github.com/Metta-AI/cogame-moba/tree/main/players",
+      "source_url": "https://github.com/Metta-AI/cogame-nmmo/tree/main/players",
       "resources": {
         "requests": {
           "cpu": "500m",

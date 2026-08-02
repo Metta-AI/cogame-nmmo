@@ -1,10 +1,18 @@
-# cogame-moba wire protocol
+# cogame-nmmo wire protocol
 
 The protocol a policy container speaks to play an episode, plus the
 spectator and replay surfaces. The observation and action *encodings* are
-deliberately opaque here: they are the upstream PufferLib Ocean MOBA
+deliberately opaque here: they are the upstream PufferLib Ocean NMMO3
 encodings, transported verbatim (see "Observations" and "Actions" below
 for the upstream ground truth).
+
+> **Port status:** the sections below still describe the inherited
+> cogame-moba server (510-byte obs, 6-int actions, hero/team language).
+> Phase N2 rewrites this document for NMMO3: 1707-byte obs, single-int
+> 26-way actions (no-op `[4]`), a per-tick `"resets"` field (per-agent
+> done flags so recurrent policies can zero state on respawn), and
+> score-centric results. Until then, treat the NMMO3 facts in README.md
+> and `vendor/upstream/nmmo3.h` as ground truth.
 
 ## Player websocket (`GET /player?slot=N&token=T`)
 

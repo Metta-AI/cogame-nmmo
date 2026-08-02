@@ -1,4 +1,4 @@
-// cogame-moba replay viewer: re-simulates a recorded episode in the
+// cogame-nmmo replay viewer: re-simulates a recorded episode in the
 // browser and renders it with the upstream raylib client.
 //
 // Built twice by sim/build_viewer.sh, always against build/src-patched:

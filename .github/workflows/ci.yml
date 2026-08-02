@@ -1,7 +1,7 @@
 name: CI
 
 # Test + package-smoke every push/PR, and — on main only, AFTER both jobs
-# are green — build and upload a new "moba" version to Softmax.
+# are green — build and upload a new "nmmo" version to Softmax.
 #
 # The upload lives in this workflow (not a separate push-triggered one)
 # deliberately: `needs: [test, docker-smoke]` is the gate that makes a
@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Explicit game version for the Coworld upload (default: bump patch of latest uploaded moba)"
+        description: "Explicit game version for the Coworld upload (default: bump patch of latest uploaded nmmo)"
         required: false
 
 # Superseded PR runs are cancelled; main runs are never cancelled (an
@@ -77,13 +77,13 @@ jobs:
       - uses: actions/checkout@v5
       - uses: docker/setup-buildx-action@v3
       - name: Build image
-        run: docker build --platform=linux/amd64 -t cogame-moba:ci .
+        run: docker build --platform=linux/amd64 -t cogame-nmmo:ci .
       - name: Raw-Docker episode smoke
-        run: bash tools/ci/docker_smoke.sh cogame-moba:ci
+        run: bash tools/ci/docker_smoke.sh cogame-nmmo:ci
 
-  # Upload a new "moba" version to Softmax (https://softmax.com/api).
+  # Upload a new "nmmo" version to Softmax (https://softmax.com/api).
   # Gated on green test + docker-smoke jobs (see the header comment).
-  # The version is the HIGHEST EXISTING moba registry row with the patch
+  # The version is the HIGHEST EXISTING nmmo registry row with the patch
   # bumped (tools/ci/next_coworld_version.py), unless an explicit version
   # is passed via workflow_dispatch. Do NOT use `coworld next-version`
   # here: it is canonical-based, so an orphan non-canonical row from a
@@ -92,16 +92,16 @@ jobs:
   # overnight 2026-07-30/31 this way).
   #
   # Bootstrap (Phase 6): the picker hard-fails while the registry has no
-  # "moba" rows, so the FIRST upload must either be a one-time local
+  # "nmmo" rows, so the FIRST upload must either be a one-time local
   # `coworld upload-coworld` or a workflow_dispatch run with an explicit
   # version input.
   #
-  # Auth: the SOFTMAX_TOKEN repo secret — a non-expiring "cogame-moba-ci"
+  # Auth: the SOFTMAX_TOKEN repo secret — a non-expiring "cogame-nmmo-ci"
   # user credential (softmax.com/observatory/credentials). The secret does
   # not exist until Phase 6 mints it; until then every run takes the
   # guarded skip path below and succeeds without uploading, so this job
   # is safe to keep on main. To (re)set it:
-  #   gh secret set SOFTMAX_TOKEN --repo Metta-AI/cogame-moba
+  #   gh secret set SOFTMAX_TOKEN --repo Metta-AI/cogame-nmmo
   upload-coworld:
     runs-on: ubuntu-latest
     needs: [test, docker-smoke]
@@ -117,13 +117,13 @@ jobs:
         run: |
           if [ "$HAVE_SOFTMAX_TOKEN" != "true" ]; then
             echo "::warning::SOFTMAX_TOKEN secret is not set; skipping the Coworld upload." \
-                 " Phase 6 mints the cogame-moba-ci credential" \
+                 " Phase 6 mints the cogame-nmmo-ci credential" \
                  " (softmax.com/observatory/credentials) and sets the repo secret."
           fi
       - uses: actions/checkout@v5
         if: env.HAVE_SOFTMAX_TOKEN == 'true'
         with:
-          path: cogame-moba
+          path: cogame-nmmo
       - uses: astral-sh/setup-uv@v6
         if: env.HAVE_SOFTMAX_TOKEN == 'true'
       - uses: docker/setup-buildx-action@v3
@@ -144,23 +144,23 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          python3 cogame-moba/tools/ci/test_next_coworld_version.py
+          python3 cogame-nmmo/tools/ci/test_next_coworld_version.py
           version="${INPUT_VERSION:-}"
           if [ -z "$version" ]; then
-            version=$(python3 cogame-moba/tools/ci/next_coworld_version.py moba)
+            version=$(python3 cogame-nmmo/tools/ci/next_coworld_version.py nmmo)
           fi
           if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "invalid version '$version' (expected MAJOR.MINOR.PATCH)" >&2
             exit 1
           fi
-          echo "Uploading as moba $version"
+          echo "Uploading as nmmo $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       # Two-step flow: `build` (compose build + manifest hydration from
       # the template) then `upload-coworld` (registry push + hosted
       # smoke certification).
       - name: Build, certify, and upload
         if: env.HAVE_SOFTMAX_TOKEN == 'true'
-        working-directory: cogame-moba
+        working-directory: cogame-nmmo
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -186,7 +186,7 @@ jobs:
           import json, sys
           expected = sys.argv[1]
           rows = json.load(open("/tmp/coworlds-after.json"))
-          for name in ("moba",):
+          for name in ("nmmo",):
               match = [r for r in rows if r.get("name") == name and r.get("version") == expected]
               if not match:
                   raise SystemExit(f"uploaded {name} version {expected} not found on server")
