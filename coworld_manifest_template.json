@@ -330,7 +330,7 @@
     {
       "id": "default",
       "name": "Default (8 seats FFA)",
-      "description": "Eight seats, one agent each: free-for-all survival, seats ranked by cumulative min(combat, profession) score.",
+      "description": "Eight seats, one agent each: free-for-all survival, seats ranked by score: mean min(combat, profession) level per life.",
       "game_config": {
         "players": [
           {
