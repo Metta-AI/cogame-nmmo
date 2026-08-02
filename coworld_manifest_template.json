@@ -11,7 +11,7 @@
     "replay_viewer": {
       "bundle": "static-replay-viewer"
     },
-    "description": "PufferLib's Ocean NMMO3 (Neural MMO 3) as a Coworld: a persistent 512x512 survival world, bit-exact with the upstream training environment (same C sim compiled to wasm, same 1707-byte observations and 26-way discrete actions). Eight free-for-all agents harvest resources, fight enemies, level combat and profession skills, and equip gear; death or 500-tick stagnation respawns an agent in place. Episodes end at the tick cap; seats are ranked by score: cumulative min(combat, profession) level over their lives. Replays re-simulate deterministically in a static wasm viewer from the recorded seed and per-tick action log. NOTE: player/certification images and the viewer bundle are finalized in Phases N3-N5.",
+    "description": "PufferLib's Ocean NMMO3 (Neural MMO 3) as a Coworld: a persistent 512x512 survival world, bit-exact with the upstream training environment (same C sim compiled to wasm, same 1707-byte observations and 26-way discrete actions). Eight free-for-all agents harvest resources, fight enemies, level combat and profession skills, and equip gear; death or 500-tick stagnation respawns an agent in place. Episodes end at the tick cap; seats are ranked by score: mean min(combat, profession) level per life, summed over the seat's agents — normalizing by lives makes every death hurt, so suicide-respawn farming never pays. Replays re-simulate deterministically in a static wasm viewer from the recorded seed and per-tick action log.",
     "owner": "daveey@softmax.com",
     "runnable": {
       "type": "game",
@@ -72,9 +72,10 @@
           "default": 5000
         },
         "heroes_per_seat": {
-          "description": "Sim agents each seat controls (default 1: one agent per policy, free-for-all).",
+          "description": "Sim agents each seat controls (default 1: one agent per policy, free-for-all). Capped at 4 so total sim agents (players x heroes_per_seat, players capped at 16) never exceed 64 - comfortably under the replay viewer's 1024-agent bound (sim/viewer_main.c VIEWER_MAX_AGENTS) and the tested world-population range.",
           "type": "integer",
           "minimum": 1,
+          "maximum": 4,
           "default": 1
         },
         "tick_deadline_ms": {
@@ -131,7 +132,7 @@
           }
         },
         "scores": {
-          "description": "One scalar score per seat (higher = better): cumulative min(combat, profession) level over the seat's agents' ended lives plus the final life's min, summed over the seat's agents. Episodes have no winner; ranking consumers order by this value. sim_fault episodes score all seats 0.0 (equal = drawn).",
+          "description": "One scalar score per seat (higher = better): per agent, the mean min(combat, profession) level per life — cumulative min over ended lives plus the final life's min, divided by lives (deaths + 1) — summed over the seat's agents. Normalizing by lives kills the suicide-farming exploit (raw cumulative score would reward dying to bank min >= 1 and respawn). Episodes have no winner; ranking consumers order by this value. sim_fault episodes score all seats 0.0 (equal = drawn).",
           "type": "array",
           "minItems": 2,
           "maxItems": 16,
@@ -295,7 +296,7 @@
           "title": "Porting PufferLib envs",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/cogame-nmmo/blob/main/docs/PORTING.md"
+            "value": "https://github.com/Metta-AI/cogame-moba/blob/main/docs/PORTING.md"
           }
         }
       ]
@@ -306,7 +307,7 @@
       "id": "baseline",
       "name": "baseline",
       "type": "player",
-      "description": "Upstream PufferLib pretrained MMONet policy (nmmo3_weights.bin) run through the demo network forward pass compiled to wasm - the exact network the sim was trained with (Phase N3). Image placeholder is replaced at deploy time.",
+      "description": "Upstream PufferLib pretrained MMONet policy (nmmo3_weights.bin) run through the demo network forward pass compiled to wasm - the exact network the sim was trained with. Image placeholder is replaced at deploy time.",
       "image": "{{PLAYER_IMAGE}}",
       "run": [
         "python",
@@ -422,7 +423,7 @@
       "num_agents": 8,
       "heroes_per_seat": 1,
       "seed": 42,
-      "max_ticks": 1500,
+      "max_ticks": 600,
       "tick_deadline_ms": 1000,
       "player_connect_timeout_seconds": 60
     }

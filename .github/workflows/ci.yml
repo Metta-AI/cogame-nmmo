@@ -66,10 +66,10 @@ jobs:
         run: uv sync --frozen
       # Full suite including slow-marked tests: the whole run is fast,
       # and tests/test_fidelity.py is THE acceptance gate for this repo.
-      # COGAME_REQUIRE_WASM_BUILD turns the local-convenience "viewer not
-      # built" skips (tests/test_viewer.py) into failures: in CI the
-      # artifacts were just built, so a skip here would mean the gate
-      # silently stopped gating.
+      # COGAME_REQUIRE_WASM_BUILD turns the local-convenience "wasm not
+      # built" skips (tests/test_fidelity.py, tests/test_viewer.py) into
+      # failures: in CI the artifacts were just built, so a skip here
+      # would mean the gate silently stopped gating.
       - name: Run tests
         env:
           COGAME_REQUIRE_WASM_BUILD: "1"
@@ -122,9 +122,23 @@ jobs:
     env:
       HAVE_SOFTMAX_TOKEN: ${{ secrets.SOFTMAX_TOKEN != '' }}
     steps:
+      # The missing-secret path is a deliberate bootstrap convenience,
+      # but once uploads are live a deleted/expired token must NOT
+      # silently stop publishes: the UPLOAD_REQUIRED repo variable
+      # (gh variable set UPLOAD_REQUIRED --body true) turns the skip
+      # into a hard failure. Unset, behavior is the historical skip+warn.
       - name: Check upload credential
+        env:
+          UPLOAD_REQUIRED: ${{ vars.UPLOAD_REQUIRED }}
         run: |
           if [ "$HAVE_SOFTMAX_TOKEN" != "true" ]; then
+            if [ "$UPLOAD_REQUIRED" = "true" ]; then
+              echo "::error::SOFTMAX_TOKEN secret is not set but the" \
+                   " UPLOAD_REQUIRED repo variable is true: uploads are" \
+                   " expected to run. Restore the secret" \
+                   " (gh secret set SOFTMAX_TOKEN) or clear the variable."
+              exit 1
+            fi
             echo "::warning::SOFTMAX_TOKEN secret is not set; skipping the Coworld upload." \
                  " Phase 6 mints the cogame-nmmo-ci credential" \
                  " (softmax.com/observatory/credentials) and sets the repo secret."
