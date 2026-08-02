@@ -1,6 +1,6 @@
 # cogame-nmmo Implementation Plan
 
-> Executed per docs/PORTING.md with two-stage review (spec, then quality) per phase.
+> Executed per docs/PORTING.md (since moved; canonical copy lives in Metta-AI/cogame-moba) with two-stage review (spec, then quality) per phase.
 > Design (settled, do not re-litigate): docs/plans/2026-08-02-cogame-nmmo-design.md.
 > This repo is a FORK of cogame-moba @ 2f24217 — the server layer, tooling, workflows, and test
 > patterns are inherited; tasks below say what to SWAP. When in doubt, the moba twin of a file

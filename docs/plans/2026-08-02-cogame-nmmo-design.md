@@ -2,7 +2,7 @@
 
 A Coworld running PufferLib's Ocean NMMO3 ("Neural MMO 3") with bit-exact obs/action/physics,
 so policies RL-trained on the original environment play identically. Built by executing
-`docs/PORTING.md` (this repo is forked from cogame-moba @ 2f24217, which includes the hardened
+`docs/PORTING.md` (since moved; canonical copy lives in Metta-AI/cogame-moba) (this repo is forked from cogame-moba @ 2f24217, which includes the hardened
 server layer); the moba design remains in `docs/plans/2026-08-01-cogame-moba-design.md` for
 reference.
 

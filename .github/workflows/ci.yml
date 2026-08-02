@@ -134,9 +134,9 @@ jobs:
           if [ "$HAVE_SOFTMAX_TOKEN" != "true" ]; then
             if [ "$UPLOAD_REQUIRED" = "true" ]; then
               echo "::error::SOFTMAX_TOKEN secret is not set but the" \
-                   " UPLOAD_REQUIRED repo variable is true: uploads are" \
-                   " expected to run. Restore the secret" \
-                   " (gh secret set SOFTMAX_TOKEN) or clear the variable."
+                   "UPLOAD_REQUIRED repo variable is true: uploads are" \
+                   "expected to run. Restore the secret" \
+                   "(gh secret set SOFTMAX_TOKEN) or clear the variable."
               exit 1
             fi
             echo "::warning::SOFTMAX_TOKEN secret is not set; skipping the Coworld upload." \

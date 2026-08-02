@@ -61,7 +61,9 @@ bash sim/build_viewer.sh    # -> viewer/dist/ + build/viewer_core.* (pinned rayl
 ```
 
 `build/`, `dist/`, and `viewer/dist/` are gitignored build outputs. The
-Dockerfile runs the same four scripts in its wasm-builder stage; the emcc
+Dockerfile runs the last three scripts in its wasm-builder stage
+(`apply_patches.sh` runs transitively inside `build_sim.sh` and
+`build_viewer.sh`, and is idempotent); the emcc
 pin (6.0.5) is recorded in `vendor/UPSTREAM.md` and must stay in sync
 across the Dockerfile and `.github/workflows/ci.yml`.
 

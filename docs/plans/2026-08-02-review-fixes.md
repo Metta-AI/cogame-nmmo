@@ -88,7 +88,8 @@ comments), deduplicated and ordered. Sim-layer changes must keep the fidelity ga
     `feed_and_step`; viewer compares header `sim_wasm_sha256` vs its own embedded hash →
     on-screen warning on mismatch (holistic minor).
 23. Stale "Phase N" strings in shipped pages/comments (server.py:420,523,541,
-    viewer_main.c:186); PORTING.md upload-workflow filename (job lives in ci.yml);
+    viewer_main.c:186); PORTING.md (since moved; canonical copy lives in
+    Metta-AI/cogame-moba) upload-workflow filename (job lives in ci.yml);
     AGENTS.md "four scripts" → three; Dockerfile comment re apply_patches in build_brain.
 24. Wasm stdio note in sim.py (unterminated printf never flushes); artifact-write retries
     delay done-broadcast — reorder: broadcast done first, then write with retries (check

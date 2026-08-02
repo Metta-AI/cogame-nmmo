@@ -89,8 +89,11 @@ expected = {
 assert set(results) == expected, f"results keys drifted: {sorted(set(results) ^ expected)}"
 assert len(results["scores"]) == 2, results["scores"]
 # scores are mean min(comb,prof) per life, summed over the seat's
-# agents (higher = better): every life banks min >= 1, so each agent's
-# mean is >= 1 and a 4-hero seat in a live episode scores >= 4
+# agents (higher = better). Every ENDED life banks min >= 1, but an
+# agent dead-awaiting-respawn at the tick cap contributes 0 for its
+# current life, so a per-agent mean can dip below 1 — hence the loose
+# per-seat >= 0 plus a sum >= 1 floor (all-zero would mean no agent
+# ever banked a life: a broken episode)
 assert all(s >= 0 for s in results["scores"]), results["scores"]
 assert sum(results["scores"]) >= 1, results["scores"]
 assert results["end_reason"] in ("tick_cap", "wall_clock"), results["end_reason"]
