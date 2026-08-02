@@ -268,13 +268,13 @@ def mind():
     return ScriptedMind(seed=1, agent_idx=0)
 
 
-def primed_mind(enemy_obs):
-    """Mind whose liveness map trusts the enemies in ``enemy_obs``:
-    entity bytes only count once they CHANGE between consecutive
-    windows (window-relative staleness), so feed an empty window first.
-    The mind's first action is a wander move; the second obs reports
-    anim=IDLE, i.e. that move was blocked — shift (0,0), diff arms the
-    enemy cells."""
+def primed_mind():
+    """Mind primed to trust the NEXT obs's enemies: entity bytes only
+    count once they CHANGE between consecutive windows (window-relative
+    staleness), so feed an enemy-free window first. The mind's first
+    action is a wander move; the caller's follow-up obs reports
+    anim=IDLE, i.e. that move was blocked — shift (0,0), and the diff
+    arms the enemy cells."""
     m = mind()
     m.act(make_obs())
     return m
@@ -289,13 +289,13 @@ def test_fsm_runs_from_adjacent_strong_enemy():
     # strong live enemy hint directly above (delta 2): disengage by
     # RUNNING down (the uniquely most-distancing move, at run speed)
     obs = make_obs(hp=30, enemies=[(sp.CENTER_ROW - 1, sp.CENTER_COL, 2, 4)])
-    m = primed_mind(obs)
+    m = primed_mind()
     assert m.act(obs) == sp.ATN_DOWN + sp.RUN_OFFSET
 
 
 def test_fsm_attacks_adjacent_weak_enemy_when_healthy():
     obs = make_obs(hp=99, enemies=[(sp.CENTER_ROW, sp.CENTER_COL + 1, 0, 4)])
-    m = primed_mind(obs)
+    m = primed_mind()
     assert m.act(obs) == sp.ATN_ATTACK
 
 
@@ -316,7 +316,7 @@ def test_fsm_ignores_stale_enemy_imprints():
 
 def test_fsm_does_not_pick_fights_with_stronger_enemies():
     obs = make_obs(hp=99, enemies=[(sp.CENTER_ROW, sp.CENTER_COL + 1, 3, 4)])
-    m = primed_mind(obs)
+    m = primed_mind()
     assert m.act(obs) != sp.ATN_ATTACK
 
 
@@ -325,7 +325,7 @@ def test_fsm_disengages_from_weak_enemy_at_mid_hp():
     enemy chases regardless of level (enemy_ai has no level check), so
     it must RUN from a live adjacent hint rather than linger."""
     obs = make_obs(hp=70, enemies=[(sp.CENTER_ROW, sp.CENTER_COL + 1, 0, 4)])
-    m = primed_mind(obs)
+    m = primed_mind()
     action = m.act(obs)
     assert action != sp.ATN_ATTACK
     assert action - sp.RUN_OFFSET in sp.MOVE_DELTAS  # runs, not walks
@@ -495,16 +495,22 @@ def test_action_validity_fuzz():
 # -- (5) behavioral ----------------------------------------------------------
 
 BEHAVIORAL_TICKS = 2000
+# Episodes are cached by key so every behavioral assertion over the same
+# matchup shares one run (guard style mirrored in tests/test_baseline.py).
 _episode_cache: dict = {}
 
+# Multi-seed gate: the scripted margin is real but thin (~1.2 vs ~1.0
+# per-life), so the assertion pools three seeds instead of riding one.
+SCRIPTED_VS_RANDOM_SEEDS = (17, 23, 31)
 
-def _scripted_vs_random():
-    """One cached 2000-tick episode serves both scripted-vs-random
-    assertions (raw + per-life)."""
-    if "svr" not in _episode_cache:
-        _episode_cache["svr"] = _run_groups(
-            17, _scripted_group(range(4)), _random_group(range(4, 8)))
-    return _episode_cache["svr"]
+
+def _scripted_vs_random(seed):
+    """One cached 2000-tick episode per seed."""
+    key = ("svr", seed)
+    if key not in _episode_cache:
+        _episode_cache[key] = _run_groups(
+            seed, _scripted_group(range(4)), _random_group(range(4, 8)))
+    return _episode_cache[key]
 
 
 def _run_groups(seed, group_a, group_b, ticks=BEHAVIORAL_TICKS):
@@ -571,13 +577,29 @@ def test_scripted_beats_random_on_ranking_score():
     cumulative sum this ordering was distorted by death-count farming —
     see test_baseline's history note). The FSM's kill-grab-harvest loop
     banks min(comb,prof) >= 2 in a meaningful fraction of lives, so its
-    per-life mean sits measurably above random's ~1.0 floor (measured
-    seeds 17/23/31: scripted mean ~1.22-1.33, random 1.00)."""
-    scripted, random_ = _scripted_vs_random()
-    print(f"\nscripted-vs-random: scripted={scripted} "
-          f"random={random_}")
-    assert np.mean(scripted["per_life"]) > np.mean(random_["per_life"]), (
-        scripted, random_)
+    per-life mean sits above random's ~1.0 floor — a real but thin
+    margin, so the assertion POOLS three seeds rather than riding one.
+    Measured (2026-08-02): scripted means 1.217 / 1.212 / 1.242 vs
+    random 1.000 / 0.995 / 0.989 on seeds 17 / 23 / 31 (random dips
+    under 1.0 when an agent is dead-awaiting-respawn at the cap: the
+    current life contributes 0).
+
+    Toolchain-drift note: if these numbers shift right after an
+    emcc/emsdk bump, suspect a sim-wasm float/codegen change moving the
+    world trajectory (the scripted bot itself is pure Python, but every
+    episode it plays runs inside the emcc-built sim) — recalibrate the
+    pinned expectations before suspecting the bot or the port."""
+    scripted_means, random_means = [], []
+    for seed in SCRIPTED_VS_RANDOM_SEEDS:
+        scripted, random_ = _scripted_vs_random(seed)
+        print(f"\nscripted-vs-random seed {seed}: scripted={scripted} "
+              f"random={random_}")
+        scripted_means.append(float(np.mean(scripted["per_life"])))
+        random_means.append(float(np.mean(random_["per_life"])))
+    print(f"pooled per-life means over seeds {SCRIPTED_VS_RANDOM_SEEDS}: "
+          f"scripted={scripted_means} random={random_means}")
+    assert np.mean(scripted_means) > np.mean(random_means), (
+        scripted_means, random_means)
 
 
 @pytest.mark.slow

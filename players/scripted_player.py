@@ -96,6 +96,11 @@ Behavior (priority order in ScriptedMind._decide):
      no-improvement reset (c_step nmmo3.h:1926-1956) is the enemy, so
      keep moving and keep min(comb, prof) rising.
 
+Threat model is deliberately NPC-centric: PLAYER entities are never
+modeled as threats (ATN_ATTACK cannot target players — find_target is
+called with ENTITY_ENEMY, nmmo3.h:2107 — and players have no aggro AI),
+so other players' imprints are simply ignored.
+
 On a wire ``resets[j]`` flag (death or stagnation reset — the new life
 starts at comb=prof=1 somewhere else) the per-agent mind state is
 cleared and behavior restarts from scratch.
@@ -290,7 +295,9 @@ LIVE_TTL = 3         # ticks an entity cell stays trusted after its
 
 
 class Percept:
-    """Decoded view of one 1707-byte observation (zero-copy reshape)."""
+    """Decoded view of one 1707-byte observation: one upfront copy into
+    a mutable buffer (``bytearray``), then zero-copy numpy views over
+    it."""
 
     def __init__(self, obs: bytes):
         if len(obs) != OBS_SIZE:
