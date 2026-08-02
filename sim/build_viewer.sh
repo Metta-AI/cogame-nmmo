@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build the replay viewer from sim/viewer_main.c (patched tree):
 #
-#   viewer/dist/moba_viewer.{js,wasm,data} + index.html   (browser bundle,
-#       -DMOBA_RENDER, raylib web, preloaded vendor render assets)
+#   viewer/dist/nmmo3_viewer.{js,wasm,data} + index.html   (browser bundle,
+#       -DNMMO3_RENDER, raylib web, preloaded vendor render assets)
 #   build/viewer_core.{js,wasm}                           (headless core,
 #       no raylib, ENVIRONMENT=node — tests/test_viewer.py re-sim check)
 #
@@ -13,6 +13,9 @@
 # Memory flags match sim/build_sim.sh rationale: the sim's ai_paths BFS
 # cache is a 256 MB calloc (and viewer_seek re-allocates it); grow to
 # 1 GB, abort loudly on OOM instead of NULL-write corruption.
+# NOTE (Phase N4 pending): sim/viewer_main.c is still the moba viewer;
+# Phase N4 rewrites it for the nmmo3 renderer (-DNMMO3_RENDER). Until
+# then this script fails at the compile step.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -57,7 +60,7 @@ MEM_FLAGS=(-sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=1gb -sABORTING_MALLOC=1
 
 # -- browser bundle (render build) -------------------------------------------
 mkdir -p viewer/dist
-emcc -O2 -DMOBA_RENDER -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
+emcc -O2 -DNMMO3_RENDER -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
     -I build/src-patched -I "$RAYLIB_DIR/include" \
     sim/viewer_main.c "$RAYLIB_DIR/lib/libraylib.a" \
     -sUSE_GLFW=3 -sUSE_WEBGL2=1 \
@@ -66,7 +69,7 @@ emcc -O2 -DMOBA_RENDER -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
     -sEXPORTED_FUNCTIONS="_main,$VIEWER_EXPORTS" \
     -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8 \
     --preload-file vendor/upstream/resources@resources \
-    -o viewer/dist/moba_viewer.js
+    -o viewer/dist/nmmo3_viewer.js
 cp viewer/index.html viewer/dist/index.html
 
 # -- headless core (node verification build) ---------------------------------

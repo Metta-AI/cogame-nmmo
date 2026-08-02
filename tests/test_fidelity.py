@@ -1,35 +1,34 @@
 """THE acceptance gate (CI-enforced): patched sim == pristine upstream sim.
 
-Drives build/moba_sim.wasm (all patches) and build/moba_sim_pristine.wasm
+Drives build/nmmo3_sim.wasm (all patches) and build/nmmo3_sim_pristine.wasm
 (patch 0001 render-guard only — the minimum that compiles) with the identical
-random action log and asserts byte-identical 510-byte observation streams and
-float32 reward streams every tick.
+random action log and asserts byte-identical 1707-byte observation streams,
+float32 reward streams, and per-tick terminal flags every tick, plus equal
+state digests at the end.
 
-Seeding subtlety (patch 0002): the patched build calls srand(1) for seed=1;
-the pristine build never calls srand, so it runs on libc's default rand()
-state. Under emscripten's musl libc, srand(s) stores s - 1 and the initial
-state is 0, so srand(1) reproduces the default stream exactly — verified by
-this test passing from tick 0.
+Seeding: both builds get the seed the same way — the shim writes the
+env.rng struct field before c_reset (nmmo3 draws all randomness through
+rand_r(&env->rng) and never seeds itself), so no seeding patch exists and
+there is no seed-related divergence to reason about.
 
-If the patched sim reports done (ancient death), the pristine sim has
-auto-reset internally on that same tick (upstream behavior patch 0003
-removes), so observation streams legitimately diverge there: the comparison
-would stop at that tick after checking rewards, which are computed in
-step_players before the win check and must still match. For THIS action
-stream (numpy default_rng(42)) no win occurs within 5000 ticks, and the test
-asserts exactly that at the end — the gate compares all 5000 ticks and must
-fail loudly if a change to the action stream (or the sim) ever ends the
-episode early and silently weakens the comparison.
+Termination: nmmo3 has no env-wide episode end and no internal auto-reset
+(agents individually die and respawn in place, which both builds do
+identically), so unlike the moba gate there is no early-stop branch — the
+comparison runs the full TICKS ticks unconditionally, and the tick floor
+assert keeps the gate from silently shrinking.
 
-A failure here means a patch changed in-episode physics. Fix the patch,
-never this test.
+The only behavior patch is 0002 (fault flag): it replaces two
+unreachable-in-practice exit(1) debug guards. This gate is degenerate while
+that is the whole patch set — it exists as the permanent guard for any
+future patch. A failure here means a patch changed in-episode physics: fix
+the patch, never this test.
 """
 
 import numpy as np
 import pytest
 
-from cogame_nmmo.sim import (ACT_HIGH, DEFAULT_WASM_PATH, PRISTINE_WASM_PATH,
-                             MobaSim)
+from cogame_nmmo.sim import (ACT_HIGH, DEFAULT_WASM_PATH, NUM_AGENTS,
+                             PRISTINE_WASM_PATH, NmmoSim)
 
 TICKS = 5000
 
@@ -37,32 +36,32 @@ TICKS = 5000
 @pytest.mark.skipif(not PRISTINE_WASM_PATH.exists(),
                     reason="run sim/build_sim.sh first")
 def test_patched_matches_pristine():
-    patched = MobaSim(seed=1, wasm_path=DEFAULT_WASM_PATH)
-    pristine = MobaSim(seed=1, wasm_path=PRISTINE_WASM_PATH)
+    patched = NmmoSim(seed=1, wasm_path=DEFAULT_WASM_PATH)
+    pristine = NmmoSim(seed=1, wasm_path=PRISTINE_WASM_PATH)
 
     assert patched.observations().tobytes() == pristine.observations().tobytes(), \
-        "initial obs diverged (seeding mismatch: srand(1) != default stream?)"
+        "initial obs diverged (env.rng seeding mismatch?)"
 
     rng = np.random.default_rng(42)
     compared = 0
     for t in range(TICKS):
-        acts = rng.integers(0, ACT_HIGH, size=(10, 6)).astype(np.float32)
+        acts = rng.integers(0, ACT_HIGH,
+                            size=(NUM_AGENTS, 1)).astype(np.float32)
         for sim in (patched, pristine):
             sim.set_actions(acts)
             sim.step()
         assert patched.rewards().tobytes() == pristine.rewards().tobytes(), \
             f"rewards diverged at tick {t}"
-        if patched.done():
-            # pristine auto-reset this tick (patched skips it, patch 0003);
-            # post-win obs legitimately differ - stop comparing here
-            break
+        assert patched.terminals().tobytes() == pristine.terminals().tobytes(), \
+            f"terminals diverged at tick {t}"
         assert patched.observations().tobytes() == pristine.observations().tobytes(), \
             f"obs diverged at tick {t}"
         compared += 1
 
-    # Floor: the gate must not silently weaken. This action stream is known
-    # not to end the episode; all TICKS ticks must have been fully compared.
-    assert not patched.done(), \
-        "episode ended early - action stream changed? re-verify gate coverage"
+    # Floor: the gate must not silently weaken.
     assert compared == TICKS, \
         f"only {compared}/{TICKS} ticks compared - gate coverage weakened"
+    assert patched.tick() == TICKS and pristine.tick() == TICKS
+    assert patched.state_digest() == pristine.state_digest()
+    # the fault guards (patch 0002) must not have tripped on this stream
+    assert patched.fault() == 0

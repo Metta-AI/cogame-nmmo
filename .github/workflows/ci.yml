@@ -54,11 +54,13 @@ jobs:
           path: build/raylib-web
           key: raylib-web-${{ hashFiles('sim/build_viewer.sh') }}
       - name: Build wasm artifacts
+        # build_brain.sh returns in Phase N3 (nmmo3 MMONet brain shim) and
+        # build_viewer.sh in Phase N4 (nmmo3 renderer viewer); until those
+        # phases land their shim sources are still moba-shaped and the
+        # scripts fail deliberately at compile.
         run: |
           bash sim/apply_patches.sh
           bash sim/build_sim.sh
-          bash sim/build_brain.sh
-          bash sim/build_viewer.sh
       - name: Sync Python deps
         run: uv sync --frozen
       # Full suite including slow-marked tests: the whole run is fast,

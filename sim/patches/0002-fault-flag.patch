@@ -1,0 +1,42 @@
+--- a/nmmo3.h
++++ b/nmmo3.h
+@@ -170,6 +170,18 @@
+ #define MAX_TIERS 5
+ #define NPC_AGGRO_RANGE 4
+ 
++// cogame-nmmo patch 0002: upstream has two in-episode debug-guard
++// exit(1) calls in the sim half (unknown held-weapon type in
++// find_target, unknown item type in use_item). exit() inside the wasm
++// kills the host process mid-episode (results and replay lost). The
++// guards instead record a fault site here and bail out of the local
++// operation; the host polls it via sim/shim.c nmmo_fault() and ends
++// the episode cleanly (end_reason "sim_fault"). Sites:
++//   1 = find_target unknown weapon type (was assert(false); exit(1))
++//   2 = use_item unknown item type      (was exit(1))
++// File-scope static: TU-local, no MMO struct change needed.
++static int nmmo_fault_code = 0;
++
+ void range(int* array, int n) {
+     for (int i = 0; i < n; i++) {
+         array[i] = i;
+@@ -1330,8 +1342,8 @@
+         anim = ANIM_SWORD;
+         num_deltas = 3;
+     } else {
+-        assert(false);
+-        exit(1);
++        nmmo_fault_code = 1;  // patch 0002: was assert(false); exit(1)
++        return -1;            // treat as "no target found"
+     }
+ 
+     entity->anim = anim;
+@@ -1512,7 +1524,8 @@
+         equip_slot = SLOT_GEM;
+         element = ELEM_WATER;
+     } else {
+-        exit(1);
++        nmmo_fault_code = 2;  // patch 0002: was exit(1)
++        return;               // unknown item: no-op the use
+     }
+ 
+     float item_reward = env->reward_item_level * (float)tier / env->tiers;

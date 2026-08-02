@@ -16,75 +16,69 @@ rejected.
 
 ## 0001-render-guard.patch
 
-Guards `#include "raylib.h"` (+ the render-only `GLSL_VERSION` block) and the
-entire renderer section of `moba.h` (everything from the `// Raylib client`
-comment at former line 1970 through end of file: `COLORS[]`, `MapRenderer`,
-`GameRenderer`, `c_render`, `close_game_renderer`) behind `#ifdef MOBA_RENDER`.
+Guards `#include "raylib.h"` (+ the render-only `GLSL_VERSION` block,
+`nmmo3.h:21-27`) and the entire renderer section (everything from
+`#define FRAME_RATE 60` at former line 2134 through end of file: render
+constants, `Client`, `render_conversion`, `make_client`, `draw_*`,
+`c_render`, `close_client`) behind `#ifdef NMMO3_RENDER`.
 
-- Rationale: the server-side sim build must compile to STANDALONE_WASM with no
-  raylib. Upstream's sim half (lines 1–1969) uses only libc/libm; the raylib
-  include is unconditional, so without this guard nothing compiles headless.
-- No sim lines change. Upstream's `c_close`/`free_allocated_moba` free only
-  sim allocations (no renderer frees), so no in-function splits were needed.
-  The `GameRenderer* client` pointer in `struct MOBA` stays: `GameRenderer` is
-  forward-declared in the sim half and only ever dereferenced in the renderer.
-- The viewer build (Phase 4) compiles the same tree with `-DMOBA_RENDER`.
+- Rationale: the server-side sim build must compile to STANDALONE_WASM with
+  no raylib. Upstream's sim half (lines 1–2132) uses only libc/libm plus the
+  vendored `simplex.h`/`tile_atlas.h`; the raylib include is unconditional,
+  so without this guard nothing compiles headless.
+- No sim lines change. The `Client* client` pointer in `struct MMO` stays:
+  `Client` is forward-declared in the sim half (`nmmo3.h:677`) and only ever
+  dereferenced in the renderer. `tile_atlas.h` (pure data) stays unguarded —
+  the renderer's `render_conversion` uses it; the sim build just carries the
+  unused array.
+- The viewer build (Phase N4) compiles the same tree with `-DNMMO3_RENDER`.
 
-## 0002-seed.patch
+## 0002-fault-flag.patch
 
-Adds `unsigned int seed;` to `struct MOBA` and calls `srand(env->seed);` at
-the top of `init_moba()` — before the `CachedRNG` table is filled from
-`rand()` and before any spawn jitter draws.
+Converts upstream's two **in-episode** debug-guard `exit(1)` calls in the sim
+half into a recorded fault: a file-scope `static int nmmo_fault_code`
+(site codes: 1 = `find_target` unknown held-weapon type, formerly
+`assert(false); exit(1)` at `nmmo3.h:1331-1332`; 2 = `use_item` unknown item
+type, formerly `exit(1)` at `nmmo3.h:1513`) set where upstream exited,
+bailing out of the local operation only (no target found / item use no-ops).
 
-- Rationale: upstream 4.0 never calls `srand`, so every process replays the
-  libc default stream (equivalent to seed 1). Upstream 3.0's
-  `env_binding.h` did `srand(seed)` at env init; this restores that behavior
-  so a league can run varied episodes. The seed value is provided by
-  `sim/shim.c`'s `moba_init(seed, ...)`.
-- In-episode physics are unchanged: for seed == 1 the stream is identical to
-  the unseeded default (musl `srand(s)` stores `s - 1`; initial state is 0),
-  which is exactly what the fidelity test relies on.
-
-## 0003-done-flag.patch
-
-Adds `int done; int winner;` to `struct MOBA`. In `c_step`'s win branch
-(ancient death → `do_reset`), sets `env->done = 1` and `env->winner`
-(0 = radiant, 1 = dire), keeps `add_log`, and **skips the internal
-`c_reset(env)` auto-reset**.
-
-- Rationale: upstream never writes `terminals` and silently restarts the
-  episode inside `c_step` when an ancient dies. The Coworld server needs to
-  detect the end of the episode and score it; after `done`, the server stops
-  stepping. Affects only post-win behavior — every tick up to and including
-  the winning tick is byte-identical (rewards for the winning tick are
-  computed in `step_players`, before the win check).
-- `done`/`winner` are cleared by the shim's `moba_reset()`, not by `c_reset`
-  (keeps the patch surface minimal).
-- If both ancients die on the same tick (upstream sets both victory flags),
-  the tie deliberately goes to dire (`winner = dire_victory ? 1 : 0`).
-
-## 0004-fault-flag.patch
-
-Converts upstream's four **in-episode** debug-guard `exit()` calls into a
-recorded fault: a file-scope `static int moba_fault_code` (site codes 1-4:
-spawn_player move failure, scanned-target dist > 20, tower respawn move
-failure, missed-reset invariant) set where upstream exited, bailing out of
-the local operation only. Also adds `env->tick` to the three "glitch state"
-printfs so the warnings are locatable in a replay.
-
-- Rationale: `exit()` inside the wasm raises an ExitTrap in the host and
-  kills the episode process — results and replay are lost. With the flag,
-  `sim/shim.c` exports `moba_fault()`, the engine polls it every tick and
-  ends the episode cleanly with `end_reason: "sim_fault"` (no winner, draw
-  scores), writing results and the partial replay.
-- The init-time guards (`game map load`, line ~1620) keep their `exit(1)`:
-  failing to even construct the env is a startup failure, not an episode
-  to salvage.
-- In-episode physics are unchanged unless a guard trips — at which point
+- Rationale: `exit()` (or the live `assert(false)` abort — we build without
+  `-DNDEBUG`, matching upstream's default Makefile-less build) inside the
+  wasm raises a trap in the host and kills the episode process — results and
+  replay are lost. With the flag, `sim/shim.c` exports `nmmo_fault()`; the
+  engine polls it every tick and can end the episode cleanly with
+  `end_reason: "sim_fault"`, writing results and the partial replay.
+- Both guards are unreachable-in-practice states (every equippable weapon id
+  is one of tool/bow/sword; every item id is one of the twelve known types);
+  in-episode physics are unchanged unless a guard trips — at which point
   upstream would have aborted the process entirely. The fidelity gate is
   unaffected: the pristine build keeps upstream's `exit()` calls, and the
-  gate's action stream never trips a guard (`moba_fault()` stays 0, which
-  `tests/test_engine.py::test_real_sim_fault_export_is_zero` pins).
-- File-scope flag rather than a `MOBA` struct field because `spawn_player`
-  receives no env pointer; `static` keeps it TU-local (each shim includes
-  `moba.h` once).
+  gate's action stream never trips a guard (`nmmo_fault()` stays 0).
+- The many other `assert()` invariant guards in the sim half (respawn-buffer
+  capacity, spawn-count reconciliation in `c_reset`, obs-window bounds) are
+  deliberately NOT converted: they guard init-time/structural invariants
+  whose violation means corrupt state, and a loud wasm trap (a catchable
+  wasmtime `Trap` in the host) is the honest outcome — identical to native
+  upstream behavior.
+- File-scope flag rather than an `MMO` struct field: no struct-layout change,
+  TU-local (`static`), zero fidelity surface.
+
+## Why there are no seed / done-flag patches (moba had them)
+
+- **Seeding (moba patch 0002):** nmmo3 draws every random number through
+  `rand_r(&env->rng)` — a plain `unsigned int` field of `struct MMO`
+  consumed re-entrantly (`nmmo3.h:717`; e.g. `c_reset` terrain gen, spawn
+  shuffles, teleportitis). It never calls `srand`/`rand`, and never seeds
+  `env->rng` itself (zero-init = seed 0). The shim simply writes
+  `env->rng = seed` before `c_reset` — pure host-side field write, no source
+  change needed.
+- **Done flag / auto-reset removal (moba patch 0003):** nmmo3 has no
+  env-wide termination and no internal auto-reset — the world is persistent;
+  agents individually die and respawn in place. Upstream already writes
+  per-agent `env->terminals[pid] = 1.0f` in `add_player_log`
+  (`nmmo3.h:762-764`) on attack death (`attack`, `nmmo3.h:1416`) and on the
+  500-tick no-improvement stagnation reset (`c_step`, `nmmo3.h:1936`). The
+  env never clears the flags (upstream's vecenv memsets them externally each
+  step); the shim's `nmmo_step()` zeroes the buffer before `c_step`, so after
+  each step it holds exactly that tick's done flags. Episode truncation at
+  `max_ticks` is server-side, as the playbook requires.
