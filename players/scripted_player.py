@@ -380,6 +380,24 @@ class Percept:
                         int(self.tiles[r, c, TB_ENT_HP])))
         return out
 
+    def enemy_cells(self):
+        """(r, c, delta_comb, hp_bucket, element) for window tiles whose
+        entity bytes claim a live enemy (corpse anims filtered). Same
+        staleness caveats as enemy_hints. The element byte is a PERFECT
+        bow discriminator for enemies: spawn() assigns an element to
+        every level >= 15 enemy (all spawn tiles are seasonal grass,
+        nmmo3.h:1815-1830) and level >= 15 <=> ranged; element == 0
+        means a melee enemy of level <= 14."""
+        ent = self.tiles[:, :, TB_ENT_TYPE]
+        out = []
+        for r, c in zip(*np.nonzero(ent == ENTITY_ENEMY)):
+            if int(self.tiles[r, c, TB_ENT_ANIM]) == ANIM_DEATH:
+                continue
+            out.append((int(r), int(c), int(self.tiles[r, c, TB_ENT_DELTA]),
+                        int(self.tiles[r, c, TB_ENT_HP]),
+                        int(self.tiles[r, c, TB_ENT_ELEMENT])))
+        return out
+
     def item_tiles(self):
         """(r, c, item_type, tier) for every visible ground item (tile
         bytes 2-3 — the reliable half of the cell), excluding our own

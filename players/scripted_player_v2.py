@@ -253,11 +253,13 @@ class MindV2:
     # -- movement helpers (v1 lineage) ---------------------------------
 
     def _passable_moves(self, p: Percept, avoid=None):
+        occ = getattr(self, "_occupied", ())
         moves = []
         for atn, (dr, dc) in MOVE_DELTAS.items():
             if avoid is not None and atn == avoid:
                 continue
-            if p.passable(CENTER_ROW + dr, CENTER_COL + dc):
+            nr, nc = CENTER_ROW + dr, CENTER_COL + dc
+            if p.passable(nr, nc) and (nr, nc) not in occ:
                 moves.append(atn)
         return moves
 
@@ -337,9 +339,11 @@ class MindV2:
             prefs.append(col_atn)
             if dr != 0:
                 prefs.append(row_atn)
-        if (self.last_action in prefs and self._last_move_blocked(p)
-                and len(prefs) > 1):
+        if self.last_action in prefs and self._last_move_blocked(p):
             prefs.remove(self.last_action)
+            if not prefs:
+                return None     # single blocked lane: let the caller
+                                # pick another goal instead of pressing
         allowed = self._safe_moves(p, threats)
         for atn in prefs:
             if atn in allowed:
