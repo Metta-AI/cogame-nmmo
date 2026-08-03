@@ -12,6 +12,12 @@ back on death.
 
 This is a PHASE-level handoff, not a micro-override of the net (the
 refuted wrapper class): whoever owns the phase owns every action in it.
+
+SHIP VERDICT (2026-08-03): NOT SHIPPED. sticky: 8x5000 bench 6.01 vs
+6.39. burst: 8x5000 bench parity (6.97 vs 7.05, max comb 15) but the
+decisive paired ab_batch (18x5000, seeds 500-517) read -0.422
+(t=-1.37) vs baseline. Kept as a composable harness: re-test burst on
+top of any future TRAINED net.
 The dancer's world model shadows net-controlled ticks so the handoff
 starts with hot tracks; the net stays warm during dancer control so a
 post-death handback is sane.
