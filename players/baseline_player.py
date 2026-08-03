@@ -121,6 +121,11 @@ class NmmoBrain:
             raise ValueError(f"agent_idx must be 0..{self.num_agents - 1}, "
                              f"got {agent_idx}")
 
+    def set_temperature(self, t: float) -> None:
+        """Sampling temperature over the action logits (1.0 = upstream
+        stochastic sampling, bit-exact; lower sharpens toward argmax)."""
+        self._exports["brain_set_temperature"](self._store, float(t))
+
     def reset_state(self, agent_idx: int) -> None:
         """Zero one agent's MinGRU state (all layers) — the demo's
         terminals handling (nmmo3.c:71-78). Call when the wire ``resets``
@@ -155,9 +160,12 @@ class BaselinePolicy:
 
     def __init__(self, seed: int = DEFAULT_SEED,
                  num_agents: int = DEFAULT_NUM_BRAINS,
-                 wasm_path: str | Path = DEFAULT_BRAIN_WASM_PATH):
+                 wasm_path: str | Path = DEFAULT_BRAIN_WASM_PATH,
+                 temperature: float | None = None):
         self.brain = NmmoBrain(seed=seed, num_agents=num_agents,
                                wasm_path=wasm_path)
+        if temperature is not None:
+            self.brain.set_temperature(temperature)
 
     def __call__(self, tick: int, obs_rows: list, resets: list) -> list:
         if len(obs_rows) > self.brain.num_agents:

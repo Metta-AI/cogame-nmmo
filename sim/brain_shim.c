@@ -144,6 +144,38 @@ static MMONet* init_mmonet(Weights* weights, int num_agents) {
 // contract-valid obs the clamp never fires and the output is identical;
 // it only stops a malicious/corrupt obs blob from writing outside the
 // one-hot buffer or reading outside the embedding table in-wasm.
+// Temperature-scaled sampling over the 26 action logits (+1 fused value
+// head skipped, exactly like _softmax_multidiscrete, puffernet.h:370).
+// g_temperature == 1.0f reproduces upstream sampling BIT-EXACTLY (x/1.0f
+// is an identity in IEEE float) and consumes the same single rand() per
+// forward, so the default stream stays byte-identical to the demo. Lower
+// temperatures sharpen the policy toward argmax (T -> 0), removing the
+// exploration noise the net was trained with but does not need at eval.
+static float g_temperature = 1.0f;
+
+__attribute__((export_name("brain_set_temperature")))
+void brain_set_temperature(float t) {
+    // clamp: T <= 0 would divide by zero; tiny T is effectively argmax
+    g_temperature = (t < 0.01f) ? 0.01f : t;
+}
+
+static void temperature_multidiscrete(float* input, float* output) {
+    float logit_exp_sum = 0;
+    for (int i = 0; i < 26; i++) {
+        logit_exp_sum += expf(input[i] / g_temperature);
+    }
+    float prob = rand() / (float)RAND_MAX;
+    float logit_prob = 0;
+    output[0] = 0.0f;
+    for (int i = 0; i < 26; i++) {
+        logit_prob += expf(input[i] / g_temperature) / logit_exp_sum;
+        if (prob < logit_prob) {
+            output[0] = (float)i;
+            break;
+        }
+    }
+}
+
 static void mmonet_forward(MMONet* net, unsigned char* observations, float* actions) {
     memset(net->ob_map, 0, net->num_agents*11*15*59*sizeof(float));
 
@@ -216,7 +248,7 @@ static void mmonet_forward(MMONet* net, unsigned char* observations, float* acti
     mingru(net->mingru, net->proj_relu->output);
     linear(net->decoder, net->mingru->output);
 
-    softmax_multidiscrete(net->multidiscrete, net->decoder->output, actions);
+    temperature_multidiscrete(net->decoder->output, actions);
 }
 
 static MMONet* nets[BRAIN_MAX_AGENTS];
