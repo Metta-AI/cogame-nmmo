@@ -44,6 +44,9 @@ def make(kind, seed):
     if kind == "netstrap":
         from players.dancer.netstrap import NetstrapPolicy
         return NetstrapPolicy(seed)
+    if kind == "netburst":
+        from players.dancer.netstrap import NetstrapPolicy
+        return NetstrapPolicy(seed, style="burst")
     if kind == "scripted":
         from players.scripted_player import ScriptedPolicy
         return ScriptedPolicy(seed)

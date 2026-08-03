@@ -23,6 +23,10 @@ def run_one(args):
         from players.dancer.policy import DancerPolicy as K
     elif kind == "netstrap":
         from players.dancer.netstrap import NetstrapPolicy as K
+    elif kind == "netburst":
+        from players.dancer.netstrap import NetstrapPolicy
+        def K(seed):
+            return NetstrapPolicy(seed, style="burst")
     elif kind == "v2":
         from players.scripted_player_v2 import ScriptedPolicyV2 as K
     else:
