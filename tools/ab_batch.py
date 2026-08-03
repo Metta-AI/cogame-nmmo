@@ -21,9 +21,17 @@ def make(kind, seed):
     if kind == "baseline":
         from players.baseline_player import BaselinePolicy
         return BaselinePolicy(seed=seed, num_agents=1)
+    if kind.startswith("baseline_t"):
+        from players.baseline_player import BaselinePolicy
+        t = int(kind[len("baseline_t"):]) / 100.0
+        return BaselinePolicy(seed=seed, num_agents=1, temperature=t)
     if kind == "hybrid":
         from players.hybrid_player import HybridPolicy
         return HybridPolicy(seed=seed, num_agents=1)
+    if kind == "hybrid_herb":
+        from players.hybrid_player import HybridPolicy
+        return HybridPolicy(seed=seed, num_agents=1,
+                            enable_stuck_reset=False, enable_rescue=False)
     if kind == "v2":
         from players.scripted_player_v2 import ScriptedPolicyV2
         return ScriptedPolicyV2(seed)

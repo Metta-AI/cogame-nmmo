@@ -33,12 +33,19 @@ import sys
 from .baseline_player import (DEFAULT_BRAIN_WASM_PATH, DEFAULT_NUM_BRAINS,
                               DEFAULT_SEED, NmmoBrain)
 from .client import run_policy_main, seed_from_env
-from .scripted_player import I_HERB, NUM_KEY_SLOTS, ATN_ONE, Percept, item_type
+from .scripted_player import (ATN_ATTACK, ATN_DOWN, ATN_LEFT, ATN_NOOP,
+                              ATN_ONE, ATN_RIGHT, ATN_UP, CENTER_COL,
+                              CENTER_ROW, I_GEM_TYPES, I_HERB, I_HILT, I_ORE,
+                              I_TOOL, I_WOOD, MOVE_DELTAS, NUM_KEY_SLOTS,
+                              Percept, item_type, tier_level)
 
-STUCK_TICKS = 350        # no min(comb,prof) improvement for this many
+STUCK_TICKS = 250        # min(comb,prof) still 1 after this many life
                          # ticks -> zero the net's recurrent state
-STUCK_REARM = 150        # wait this long before another state reset
+STUCK_REARM = 120        # wait this long before another state reset
 HERB_HP = 35             # eat a herb below this hp
+STAG_WINDOW = 500        # the sim's strict-improvement window (c_step)
+DEADLINE_TICKS = 130     # take over this close to a predicted stagnation
+                         # reset when a rescue harvest is visible
 
 
 class _AgentClock:
@@ -49,6 +56,67 @@ class _AgentClock:
         self.best_min = 0
         self.since_improve = 0
         self.since_state_reset = 0
+        self.life_tick = 0
+        self.window_start_min = 1
+
+
+def _deadline_rescue(p: Percept, clock: "_AgentClock"):
+    """Scripted takeover near a predicted stagnation reset.
+
+    The sim force-resets a life (banking its score and wiping gear) when
+    min(comb, prof) at a 500-life-tick boundary fails to exceed the value
+    at the previous boundary. For an agent at min m that is a ~m/2 score
+    haircut - so once the deadline is close and this window shows no
+    improvement, ANY takeover with positive rescue probability beats
+    letting the net idle into the reset.
+
+    Rescue move: if prof is the binding skill and a prof-leveling
+    resource tile within our tool's tier is visible, step toward it
+    (greedy, ignoring non-adjacent threats - the reset is certain, the
+    danger is not). If comb is binding and a weak enemy is adjacent,
+    attack it. Returns an action or None.
+    """
+    m = min(p.comb_lvl, p.prof_lvl)
+    if m <= clock.window_start_min:
+        remaining = STAG_WINDOW - (clock.life_tick % STAG_WINDOW)
+    else:
+        return None
+    if remaining > DEADLINE_TICKS:
+        return None
+    held_tier = p.held_tool_tier
+    if p.prof_lvl <= p.comb_lvl and held_tier > 0:
+        best = None
+        for r, c, itype, tier in p.item_tiles():
+            if itype not in (I_ORE, I_WOOD, I_HILT, I_HERB) and                     itype not in I_GEM_TYPES:
+                continue
+            if tier > held_tier or p.prof_lvl >= tier_level(tier):
+                continue
+            d = abs(r - CENTER_ROW) + abs(c - CENTER_COL)
+            if best is None or d < best[0]:
+                best = (d, r, c)
+        if best is not None and not all(p.inventory):
+            _d, r, c = best
+            dr, dc = r - CENTER_ROW, c - CENTER_COL
+            prefs = []
+            if abs(dr) >= abs(dc):
+                if dr:
+                    prefs.append(ATN_DOWN if dr > 0 else ATN_UP)
+                if dc:
+                    prefs.append(ATN_RIGHT if dc > 0 else ATN_LEFT)
+            else:
+                prefs.append(ATN_RIGHT if dc > 0 else ATN_LEFT)
+                if dr:
+                    prefs.append(ATN_DOWN if dr > 0 else ATN_UP)
+            for atn in prefs:
+                nr = CENTER_ROW + MOVE_DELTAS[atn][0]
+                nc = CENTER_COL + MOVE_DELTAS[atn][1]
+                if p.passable(nr, nc):
+                    return atn
+    if p.comb_lvl <= p.prof_lvl:
+        for r, c, d, _hpb in p.enemy_hints():
+            if d <= 1 and abs(r - CENTER_ROW) + abs(c - CENTER_COL) == 1:
+                return ATN_ATTACK
+    return None
 
 
 class HybridPolicy:
@@ -56,7 +124,13 @@ class HybridPolicy:
 
     def __init__(self, seed: int = DEFAULT_SEED,
                  num_agents: int = DEFAULT_NUM_BRAINS,
-                 wasm_path=DEFAULT_BRAIN_WASM_PATH):
+                 wasm_path=DEFAULT_BRAIN_WASM_PATH,
+                 enable_stuck_reset: bool = True,
+                 enable_rescue: bool = True,
+                 enable_herb: bool = True):
+        self.enable_stuck_reset = enable_stuck_reset
+        self.enable_rescue = enable_rescue
+        self.enable_herb = enable_herb
         self.brain = NmmoBrain(seed=seed, num_agents=num_agents,
                                wasm_path=wasm_path)
         self.clocks = [_AgentClock() for _ in range(num_agents)]
@@ -81,16 +155,31 @@ class HybridPolicy:
             else:
                 clock.since_improve += 1
             clock.since_state_reset += 1
-            if not resets[i] and clock.since_improve >= STUCK_TICKS and \
+            if clock.life_tick % STAG_WINDOW == 0:
+                clock.window_start_min = m
+            clock.life_tick += 1
+            # Reset only TRULY stuck agents (still min 1 deep into the
+            # life): a progressing agent's recurrent memory is an asset
+            # - never disturb it, even when its progress stalls late.
+            if self.enable_stuck_reset and not resets[i] and \
+                    clock.best_min <= 1 and \
+                    clock.since_improve >= STUCK_TICKS and \
                     clock.since_state_reset >= STUCK_REARM:
                 self.brain.reset_state(i)
                 clock.since_state_reset = 0
 
             act = self.brain.forward(i, obs)
 
+            rescue = _deadline_rescue(p, clock) \
+                if self.enable_rescue else None
+            if rescue is not None:
+                self.counters = getattr(self, "counters", {})
+                self.counters["rescue"] = self.counters.get("rescue", 0) + 1
+                act = [rescue]
+
             # emergency herb: keep the net's state advanced (already
             # done) but play the heal instead of its action
-            if p.hp < HERB_HP:
+            if self.enable_herb and p.hp < HERB_HP:
                 herb = None
                 for idx, item in enumerate(p.inventory[:NUM_KEY_SLOTS]):
                     if item and item_type(item) == I_HERB:
