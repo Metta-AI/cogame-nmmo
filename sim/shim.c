@@ -202,3 +202,38 @@ __attribute__((export_name("state_digest")))
 unsigned int state_digest(void) {
     return nmmo_state_digest(&env);
 }
+
+// ---- local-analysis debug reads (read-only; no sim state is touched) ----
+// Rows of 5 ints per enemy within Chebyshev `radius` of player `pid`:
+// (dr, dc, comb_lvl, ranged, hp). Returns the row count.
+static int debug_buf[512 * 5];
+
+__attribute__((export_name("debug_buf_ptr")))
+int* debug_buf_ptr(void) { return debug_buf; }
+
+__attribute__((export_name("debug_nearby")))
+int debug_nearby(int pid, int radius) {
+    if (pid < 0 || pid >= env.num_agents)
+        return 0;
+    const Entity* player = &env.players[pid];
+    int n = 0;
+    for (int i = 0; i < env.num_enemies && n < 512; i++) {
+        const Entity* e = &env.enemies[i];
+        if (e->hp <= 0)
+            continue;
+        int dr = e->r - player->r;
+        int dc = e->c - player->c;
+        int adr = dr < 0 ? -dr : dr;
+        int adc = dc < 0 ? -dc : dc;
+        int cheb = adr > adc ? adr : adc;
+        if (cheb > radius)
+            continue;
+        debug_buf[n * 5 + 0] = dr;
+        debug_buf[n * 5 + 1] = dc;
+        debug_buf[n * 5 + 2] = e->comb_lvl;
+        debug_buf[n * 5 + 3] = e->ranged;
+        debug_buf[n * 5 + 4] = e->hp;
+        n++;
+    }
+    return n;
+}
