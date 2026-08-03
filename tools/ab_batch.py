@@ -38,6 +38,9 @@ def make(kind, seed):
     if kind == "v3":
         from players.scripted_player_v3 import ScriptedPolicyV3
         return ScriptedPolicyV3(seed)
+    if kind == "dancer":
+        from players.dancer.policy import DancerPolicy
+        return DancerPolicy(seed)
     if kind == "scripted":
         from players.scripted_player import ScriptedPolicy
         return ScriptedPolicy(seed)

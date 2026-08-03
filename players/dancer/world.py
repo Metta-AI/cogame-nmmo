@@ -240,6 +240,25 @@ class WorldModel:
                 out.append((w[0], w[1], t))
         return out
 
+    def enemies_extended(self, kind: str | None = None, margin: int = 4):
+        """Like enemies() but includes tracks up to `margin` cells
+        OUTSIDE the window (window-relative coords may exceed bounds).
+        Out-of-view tracks are stale-but-useful for run-safety: the
+        window is only +-5 rows, and a 2-tile vertical run can land in
+        range of a bow just beyond it."""
+        out = []
+        for t in self.tracks:
+            if t.kind == "player":
+                continue
+            if kind is not None and t.kind != kind:
+                continue
+            r = t.pos[0] - self.pos[0] + CENTER_ROW
+            c = t.pos[1] - self.pos[1] + CENTER_COL
+            if -margin <= r < WINDOW_ROWS + margin and \
+                    -margin <= c < WINDOW_COLS + margin:
+                out.append((r, c, t))
+        return out
+
     def occupancy(self) -> set[tuple[int, int]]:
         """Window cells our move() would bounce off (all tracks)."""
         occ = set()

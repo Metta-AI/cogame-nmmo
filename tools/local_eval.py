@@ -42,6 +42,9 @@ def make_policy(kind: str, seed: int):
     if kind == "v3":
         from players.scripted_player_v3 import ScriptedPolicyV3
         return ScriptedPolicyV3(seed)
+    if kind == "dancer":
+        from players.dancer.policy import DancerPolicy
+        return DancerPolicy(seed)
     if kind == "baseline":
         from players.baseline_player import BaselinePolicy
         return BaselinePolicy(seed=seed, num_agents=1)
