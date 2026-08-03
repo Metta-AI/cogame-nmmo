@@ -69,6 +69,7 @@ class WorldModel:
         self.prev_tiles: np.ndarray | None = None
         self.last_action: int = 4
         self.teleported = False
+        self.prev_hp: int | None = None
 
     # -- per-tick update -------------------------------------------------
 
@@ -87,6 +88,13 @@ class WorldModel:
                        != self.prev_tiles[:, :, 4:]).any(axis=2)
             changed[CENTER_ROW, CENTER_COL] = False   # that's us
         n_changed = int(changed.sum())
+        # NOTE: do NOT try to frame-align this diff by our own shift.
+        # The residue layer is WINDOW-anchored (a stale obs buffer, not
+        # world tiles): measured 2026-08-03, an aligned diff fires on
+        # every accumulated residue cell (precision 0.83 -> 0.06) while
+        # the window diff stays clean. The remaining blindness - a
+        # byte-identical rewrite at a constant window cell - is handled
+        # by the ghost-strike inference below, not by diffing.
 
         # teleportitis: the window content jumps wholesale; our anchor
         # and every track are garbage. Start clean.
@@ -187,14 +195,27 @@ class WorldModel:
             man = abs(w[0] - CENTER_ROW) + abs(w[1] - CENTER_COL)
             near_player = any(self._dist(t.pos, pp) <= 2
                               for pp in player_pos)
+            # absence proofs below disprove the PROPAGATED position,
+            # not the enemy: chase propagation drifts when the real
+            # enemy stalls on blockers we cannot see. Deleting the
+            # track made its owner an invisible killer (measured);
+            # re-anchor to the last OBSERVED position instead, and only
+            # delete when the proof fires there too (age still expires
+            # tracks that never reconfirm).
             if t.kind == "melee" and man == 1 and not p.in_combat \
                     and age >= 2 and not near_player:
+                if t.pos != t.obs_pos:
+                    t.pos = t.obs_pos
+                    kept.append(t)
                 continue
             # an inferred melee track at point-blank range that has not
             # been confirmed for several ticks is a phantom: a real one
             # would be attacking (in_combat) or moving (diff-visible)
             if t.kind == "melee" and self._cheb(w) <= 2 and t.inferred \
                     and age >= 3 and not p.in_combat and not near_player:
+                if t.pos != t.obs_pos:
+                    t.pos = t.obs_pos
+                    kept.append(t)
                 continue
             # soft-confirm: a stationary enemy writes byte-identical
             # imprints (diff-invisible); if the cell still carries this
@@ -217,6 +238,42 @@ class WorldModel:
             if cur is None or t.last_confirmed > cur.last_confirmed:
                 by_cell[key] = t
         self.tracks = list(by_cell.values())
+
+        # ghost-strike inference: our hp dropped, yet no tracked melee
+        # is adjacent and no tracked bow is aligned in range - the
+        # attacker is diff-invisible (byte-identical rewrite at a
+        # constant window cell). Materialize an inferred melee track on
+        # adjacent cells carrying melee residue so the layers above
+        # fight/dodge something real instead of grinding down blind.
+        if self.prev_hp is not None and p.hp < self.prev_hp:
+            adj_melee = bow_aligned = False
+            for t in self.tracks:
+                w = self._to_window(t.pos)
+                if w is None:
+                    continue
+                if t.kind == "melee" and \
+                        abs(w[0] - CENTER_ROW) + abs(w[1] - CENTER_COL) <= 1:
+                    adj_melee = True
+                if t.kind == "bow" and self._cheb(w) <= 4 and \
+                        (w[0] == CENTER_ROW or w[1] == CENTER_COL):
+                    bow_aligned = True
+            if not adj_melee and not bow_aligned:
+                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    r, c = CENTER_ROW + dr, CENTER_COL + dc
+                    if int(p.tiles[r, c, 4]) != ENTITY_ENEMY or \
+                            int(p.tiles[r, c, 5]) != 0:
+                        continue
+                    fpos = self._to_frame((r, c))
+                    if any(t.kind == "melee" and t.pos == fpos
+                           for t in self.tracks):
+                        continue
+                    self.tracks.append(Track(
+                        pos=fpos, obs_pos=fpos, kind="melee",
+                        delta=int(p.tiles[r, c, 6]),
+                        hp_bucket=int(p.tiles[r, c, 7]),
+                        element=0, last_confirmed=tick, born=tick,
+                        inferred=True))
+        self.prev_hp = p.hp
 
         self.prev_tiles = p.tiles.copy()
 

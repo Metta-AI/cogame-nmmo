@@ -25,7 +25,7 @@ from ..scripted_player import (ARMOR_SLOT_BY_TYPE, ATN_ATTACK, ATN_DOWN,
                                MOVE_DELTAS, NUM_KEY_SLOTS, Percept,
                                RUN_OFFSET, SLOT_HELD, item_tier, item_type,
                                tier_level)
-from .planner import plan_duel, plan_melee
+from .planner import plan_melee
 from .world import NPC_AGGRO, WorldModel
 
 STAG_WINDOW = 500
@@ -75,8 +75,24 @@ class DancerMind:
         self.wander_action = ATN_DOWN
         self.wander_left = 0
         self.idle_ticks = 0
+        self.branch = ""          # last _decide branch (forensics)
 
     # ------------------------------------------------------------------
+
+    def shadow(self, obs: bytes, action: int) -> None:
+        """Advance world/bookkeeping for a tick whose action was chosen
+        by ANOTHER policy (netstrap bootstrap): tracking, life clock and
+        stagnation window stay warm so a later handoff starts hot."""
+        p = Percept(obs)
+        self.world.last_action = self.last_action
+        self.world.observe(p, self.tick)
+        self.life_tick += 1
+        if self.life_tick % STAG_WINDOW == 1:
+            self.window_start_min = min(p.comb_lvl, p.prof_lvl)
+        self.prev_comb = p.comb_lvl
+        self.world.note_action(action)
+        self.last_action = action
+        self.tick += 1
 
     def act(self, obs: bytes) -> int:
         p = Percept(obs)
@@ -242,6 +258,7 @@ class DancerMind:
         self._vruns = {ATN_DOWN: vrun_ok(True), ATN_UP: vrun_ok(False)}
 
         # market UI
+        self.branch = "ui"
         if p.ui_mode != MODE_PLAY:
             if self.selling and not p.in_combat:
                 if p.ui_mode == MODE_SELL_SELECT:
@@ -260,6 +277,7 @@ class DancerMind:
         if p.hp < limit:
             herb = self._herb_slot(p)
             if herb is not None:
+                self.branch = "herb"
                 return ATN_ONE + herb
 
         # recovery bookkeeping
@@ -279,7 +297,11 @@ class DancerMind:
         eq_def = int(p.scalars[46])
         armored = eq_def >= 40
 
-        # bow safety (hard until armored)
+        # bow safety (hard until armored). The flee is melee-aware:
+        # bow-flee stepping into tracked melee reach was a measured
+        # 16-death class. (Engage-over-bow-flee precedence was ALSO
+        # tried 2026-08-03 and REFUTED: bow deaths tripled 11 -> 31 -
+        # phantom melee tracks suppressed the flee.)
         bow_close = [(r, c) for r, c, _t in bows
                      if max(abs(r - CENTER_ROW), abs(c - CENTER_COL))
                      <= BOW_AVOID]
@@ -291,7 +313,8 @@ class DancerMind:
             d_now = min(max(abs(CENTER_ROW - r), abs(CENTER_COL - c))
                         for r, c in bow_close)
             if here_funnel or d_now <= 4:
-                return self._flee(p, bow_close, bows, [], occ)
+                self.branch = "bow-flee"
+                return self._flee(p, bow_close, bows, melee, occ)
 
         # melee engagement via the planner. Wounded agents engage
         # (with avoid intent) a ring earlier - late evasion was a
@@ -342,30 +365,54 @@ class DancerMind:
             if their_dmg > 0 and p.hp < min(95, their_dmg + 25):
                 herb = self._herb_slot(p)
                 if herb is not None:
+                    self.branch = "herb-prefight"
                     return ATN_ONE + herb
-            occ_soft = {cell for cell in occ if cell != (r, c)}
+            # exact multi-enemy model: EVERY in-window melee is a
+            # modeled enemy for the search (gated by test_dancer_planner
+            # MiniMelee suite); bows stay hazard lines. Other melee must
+            # NOT also appear in occupied/hazards - double-counting the
+            # same threat as exact enemy + fear cells was the wiring
+            # regression (1.7 -> 1.1, kills collapsed).
+            def their_dmg_vs(track):
+                _lo2, hi2 = delta_bounds(p.comb_lvl, track.delta)
+                hi2 = min(hi2, 14)
+                return max(ENEMY_BASE + ENEMY_LEVEL_MUL * hi2
+                           - LEVEL_MUL * p.comb_lvl - eq_def, 0)
+            # FRESH tracks (recently byte-confirmed) are exact bodies
+            # for the search; STALE ones are position guesses - as
+            # bodies they cage the dance (v3 lesson, re-measured here:
+            # melee-lo deaths 29 -> 43 with phantoms as bodies), so
+            # they degrade to soft hazard reach-cells instead.
+            enemies = []
+            tidx = None
+            stale = []
+            for mr2, mc2, mt in melee:
+                fresh = (self.tick - mt.last_confirmed) <= 3
+                if mt is t:
+                    tidx = len(enemies)
+                elif not fresh:
+                    stale.append((mr2, mc2))
+                    continue
+                enemies.append(((mr2, mc2), their_dmg_vs(mt),
+                                mt.hp_bucket * 20 + 10))
+            enemy_cells = {e[0] for e in enemies}
+            occ_soft = {cell for cell in occ if cell not in enemy_cells}
             hazards = set()
             for br, bc, _bt in bows:
                 for rr in range(br - 4, br + 5):
                     hazards.add((rr, bc))
                 for cc in range(bc - 4, bc + 5):
                     hazards.add((br, cc))
-            # NOTE: plan_melee (multi-enemy) exists but is NOT wired -
-            # integrating it without its own MiniDuel gate regressed the
-            # bench 1.7 -> 1.1 (kills collapsed). Next session: write
-            # test_plan_melee (2-chaser escape, duel-with-bystander,
-            # corner), fix against the gate, THEN re-integrate.
-            for mr2, mc2, mt in melee:
-                if mt is t:
-                    continue
-                for dr2 in (-1, 0, 1):
-                    for dc2 in (-1, 0, 1):
-                        if abs(dr2) + abs(dc2) <= 1:
-                            hazards.add((mr2 + dr2, mc2 + dc2))
-            act = plan_duel((CENTER_ROW, CENTER_COL), (r, c), e_hp,
-                            our_dmg, their_dmg, sword_held, intent_kill,
-                            lambda rr, cc: p.passable(rr, cc),
-                            occ_soft, hazards)
+            for mr2, mc2 in stale:
+                for dr2, dc2 in ((0, 0), (1, 0), (-1, 0), (0, 1),
+                                 (0, -1)):
+                    hazards.add((mr2 + dr2, mc2 + dc2))
+            self.branch = (f"engage[n={len(enemies)},kill={intent_kill}"
+                           f",dmg={our_dmg},their={their_dmg}]")
+            act = plan_melee((CENTER_ROW, CENTER_COL), enemies, tidx,
+                             our_dmg, sword_held, intent_kill,
+                             lambda rr, cc: p.passable(rr, cc),
+                             occ_soft, hazards)
             return act
 
         # loot sweep
@@ -383,15 +430,18 @@ class DancerMind:
                 step = self._safe_step(p, best[1], best[2], bows, melee,
                                        occ)
                 if step is not None:
+                    self.branch = "loot"
                     return step
 
         # recovery: sit and regen
         if self.recovering:
+            self.branch = "recover"
             return ATN_NOOP
 
         # equipment
         act = self._equip(p, sword_held)
         if act is not None and not p.in_combat:
+            self.branch = "equip"
             return act
 
         # harvest
@@ -400,14 +450,17 @@ class DancerMind:
             step = self._safe_step(p, target[0], target[1], bows, melee,
                                    occ)
             if step is not None:
+                self.branch = "harvest"
                 return step
         elif all(p.inventory) and not p.in_combat and \
                 self._junk_slot(p) is not None:
             self.selling = True
+            self.branch = "sell"
             return ATN_SELL
 
         # overwatch / roam (seeking-roam during bootstrap was measured
         # NET-NEGATIVE: movement is exposure; fights come to us)
+        self.branch = "wander"
         return self._wander(p, bows, melee, occ,
                             roam=self._urgent_any(p))
 

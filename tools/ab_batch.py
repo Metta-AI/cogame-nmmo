@@ -41,6 +41,9 @@ def make(kind, seed):
     if kind == "dancer":
         from players.dancer.policy import DancerPolicy
         return DancerPolicy(seed)
+    if kind == "netstrap":
+        from players.dancer.netstrap import NetstrapPolicy
+        return NetstrapPolicy(seed)
     if kind == "scripted":
         from players.scripted_player import ScriptedPolicy
         return ScriptedPolicy(seed)

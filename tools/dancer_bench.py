@@ -21,6 +21,8 @@ def run_one(args):
     from players.baseline_player import BaselinePolicy
     if kind == "dancer":
         from players.dancer.policy import DancerPolicy as K
+    elif kind == "netstrap":
+        from players.dancer.netstrap import NetstrapPolicy as K
     elif kind == "v2":
         from players.scripted_player_v2 import ScriptedPolicyV2 as K
     else:
