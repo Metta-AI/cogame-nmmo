@@ -1,0 +1,5 @@
+ckpt_v1*/
+*.dylib
+logit_harness
+c_logits.txt
+.venv/

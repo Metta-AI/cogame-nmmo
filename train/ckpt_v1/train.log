@@ -1,0 +1,9 @@
+upd 5 steps 0.3M sps 32k pg -0.0000 v 0.305 ent 1.746 deaths/1k 1.18 mingain/1k 14.468 scoreproxy 4.70 warmup
+upd 10 steps 0.7M sps 32k pg 0.0000 v 0.150 ent 2.183 deaths/1k 0.53 mingain/1k 8.710 scoreproxy 6.74 warmup
+upd 15 steps 1.0M sps 31k pg 0.0000 v 0.087 ent 2.541 deaths/1k 0.33 mingain/1k 5.841 scoreproxy 7.66 warmup
+upd 20 steps 1.3M sps 31k pg 0.0000 v 0.118 ent 2.572 deaths/1k 0.69 mingain/1k 5.634 scoreproxy 8.31 warmup
+upd 25 steps 1.6M sps 31k pg 0.0000 v 0.192 ent 2.408 deaths/1k 0.98 mingain/1k 5.325 scoreproxy 8.21 warmup
+upd 30 steps 2.0M sps 31k pg 0.0000 v 0.139 ent 2.571 deaths/1k 0.56 mingain/1k 6.174 scoreproxy 8.57 warmup
+upd 35 steps 2.3M sps 31k pg 0.0156 v 0.271 ent 2.207 deaths/1k 1.97 mingain/1k 5.719 scoreproxy 7.83 PG
+upd 40 steps 2.6M sps 31k pg 0.0073 v 0.306 ent 1.973 deaths/1k 1.94 mingain/1k 4.779 scoreproxy 6.89 PG
+upd 45 steps 2.9M sps 31k pg 0.0079 v 0.228 ent 2.023 deaths/1k 1.81 mingain/1k 5.103 scoreproxy 6.80 PG
