@@ -428,13 +428,18 @@ proc decide(m: var Mind, p: Percept): int =
     var hpOk = p.hp >= (if theirDmg * 3 < float(p.hp): 55 else: 85)
     if p.heldToolTier == 0 and not swordHeld:
       # bootstrap trades are bare-handed hp-for-hp: only decisive,
-      # isolated, full-bar fights
+      # isolated fights. Full-bar for healthy targets; a WOUNDED weak
+      # enemy (hp bucket <= 2 = <=59 hp, 2 bare hits) is a cheap
+      # decisive kill worth taking from 60 hp - the first kill is the
+      # whole flywheel (kill -> tool -> gear).
       var farOk = true
       for e in near:
         if e.t != tgt.t and
             max(abs(e.r - CenterRow), abs(e.c - CenterCol)) <= 5:
           farOk = false; break
-      hpOk = p.hp >= 95 and farOk
+      let wounded = tgt.t.hpBucket <= 2 and ourDmg > 0 and
+        hitsNeeded <= 3
+      hpOk = (p.hp >= 95 or (wounded and p.hp >= 60)) and farOk
     let intentKill = fightable and hpOk and not second and
       not m.recovering and bowClose.len == 0
     # pre-fight herb: do not enter reach below one-hit headroom
