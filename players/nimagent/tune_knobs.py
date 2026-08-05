@@ -19,18 +19,18 @@ LOG = HERE / "tune.log"
 BEST = HERE / "tune_best.json"
 
 PARAMS = {  # name: (incumbent, min, max, step)
-    "KillBonusI": (100, 40, 240, 20),
+    "KillBonusI": (120, 40, 300, 20),
     "HitCreditI": (6, 2, 14, 1),
-    "OccPenaltyI": (25, 5, 65, 10),
+    "OccPenaltyI": (5, 0, 40, 5),
     "HazardPenaltyI": (140, 60, 320, 30),
     "WKillI": (50, 20, 100, 10),
     "WAvoidI": (90, 50, 150, 10),
-    "HerbHp": (45, 35, 65, 5),
-    "HerbHpCombat": (65, 50, 85, 5),
-    "RecoverFloor": (60, 40, 80, 5),
+    "HerbHp": (45, 35, 70, 5),
+    "HerbHpCombat": (75, 55, 95, 5),
+    "RecoverFloor": (50, 30, 70, 5),
     "RecoverUntil": (90, 70, 98, 4),
     "EngageR": (6, 5, 7, 1),
-    "HerbStock": (2, 1, 3, 1),
+    "HerbStock": (3, 1, 5, 1),
     "IdleTicksLimit": (120, 70, 220, 20),
     "QuietSettle": (20, 10, 34, 4),
 }

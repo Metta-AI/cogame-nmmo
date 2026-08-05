@@ -12,9 +12,9 @@ import percept
 
 const
   Depth* {.intdefine.} = 5
-  KillBonusI {.intdefine.} = 100   # x0.1
+  KillBonusI {.intdefine.} = 120   # x0.1
   HitCreditI {.intdefine.} = 6     # x0.1
-  OccPenaltyI {.intdefine.} = 25   # x0.1
+  OccPenaltyI {.intdefine.} = 5   # x0.1
   HazardPenaltyI {.intdefine.} = 140  # x0.1
   WKillI {.intdefine.} = 50        # x0.1
   WAvoidI {.intdefine.} = 90       # x0.1

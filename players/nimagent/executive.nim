@@ -14,15 +14,15 @@ import percept, world, planner, astar
 const
   StagWindow = 500
   HerbHp {.intdefine.} = 45
-  HerbHpCombat {.intdefine.} = 65
-  RecoverFloor {.intdefine.} = 60
+  HerbHpCombat {.intdefine.} = 75
+  RecoverFloor {.intdefine.} = 50
   RecoverUntil {.intdefine.} = 90
   BowAvoid = 4    # a bow only ACTS on players inside its +-4 box
                   # (enemy_ai scan, nmmo3.h:1592); range >= 5 is
                   # harmless leashed wander - fleeing it was measured
                   # pure cost (pushed agents into melee)
   EngageR {.intdefine.} = 6  # react OUTSIDE the enemy's 4-box
-  HerbStock {.intdefine.} = 2
+  HerbStock {.intdefine.} = 3
   IdleTicksLimit {.intdefine.} = 120
   QuietSettle {.intdefine.} = 20
 
