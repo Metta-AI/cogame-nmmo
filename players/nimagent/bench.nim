@@ -75,6 +75,7 @@ proc main() =
       prevHpBase[i] = 99
     var buf: array[ObsSize, uint8]
     var hist: array[4, seq[ProbeRow]]
+    var branchTicks: array[4, CountTable[string]]
 
     for t in 0 ..< ticks:
       # baseline seats
@@ -99,6 +100,7 @@ proc main() =
         let a = minds[k].act(buf)
         act[pid] = cfloat(a)
         if probe:
+          branchTicks[k].inc minds[k].branch.split("[")[0]
           var tr = ""
           for e in minds[k].world.enemies(tkMelee):
             tr.add &"m({e.r - CenterRow},{e.c - CenterCol},d{e.t.delta}," &
@@ -193,6 +195,11 @@ proc main() =
     for s in baseScores: bMean += s / 4
     echo &"seed {seed}: nim={nMean:.2f} base={bMean:.2f} " &
       &"deaths={deaths} mins={combs}"
+    if probe:
+      for k in 0 ..< 4:
+        branchTicks[k].sort()
+        echo &"  seat{k} d={deaths[k]} min={combs[k]} branches: ",
+          branchTicks[k]
 
   var nMean, bMean: float
   for s in allNim: nMean += s / float(allNim.len)

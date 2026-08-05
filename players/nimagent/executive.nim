@@ -49,6 +49,8 @@ type
     idleTicks: int
     branch*: string
     huntBlacklist: seq[tuple[pos: tuple[r, c: int], tick: int]]
+    settled: bool
+    quietTicks: int
 
 proc reset*(m: var Mind) =
   inc m.generation
@@ -67,6 +69,8 @@ proc reset*(m: var Mind) =
   m.idleTicks = 0
   m.branch = ""
   m.huntBlacklist = @[]
+  m.settled = false
+  m.quietTicks = 0
 
 proc initMind*(seed, agentIdx: int): Mind =
   result.seed = seed
@@ -513,6 +517,32 @@ proc decide(m: var Mind, p: Percept): int =
   # refuted 3x): a false positive costs a short walk, and a real enemy
   # aggros into a live track at range 4 where the engage branch takes
   # over with the exact-model planner.
+  # SETTLE/DISPERSE: failed seats spend half their life in permanent
+  # combat (engage 765-848/1500 ticks census) - a bad neighborhood
+  # never quiets down on its own. Until this life has seen 15
+  # consecutive threat-free ticks, visible-but-unengaged threats mean
+  # LEAVE: retreat away instead of idling next to the storm.
+  if not m.settled:
+    if melee.len == 0 and bows.len == 0:
+      inc m.quietTicks
+      if m.quietTicks >= 15: m.settled = true
+    else:
+      m.quietTicks = 0
+      # threats visible but neither engage nor bow-flee fired (range):
+      # step away from the nearest one, safety-vetoed
+      var tr = -1
+      var tc = -1
+      var bestD = 999
+      for e in melee:
+        let d = max(abs(e.r - CenterRow), abs(e.c - CenterCol))
+        if d < bestD: bestD = d; tr = e.r; tc = e.c
+      for b in bows:
+        let d = max(abs(b.r - CenterRow), abs(b.c - CenterCol))
+        if d < bestD: bestD = d; tr = b.r; tc = b.c
+      if tr >= 0:
+        m.branch = "disperse"
+        return m.flee(p, @[(tr, tc)], bows, meleeCells, occ)
+
   block hunt:
     if m.recovering or bowClose.len > 0: break hunt
     var wantBare = false
