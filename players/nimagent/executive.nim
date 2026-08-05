@@ -473,13 +473,19 @@ proc decide(m: var Mind, p: Percept): int =
     # a t2 tool - the measured min~8 plateau IS the t1 ceiling. Once
     # t1-armed at comb>=4, prefer fightable UPGRADE PREY (est level
     # >= 9); otherwise softest-first as before.
-    let wantUpgrade = p.maxToolTier == 1 and
+    # ladder recursion: tool tier T wants prey of level_tier T+1
+    # (t2 tools drop from L9-16, t3 from L17-32)
+    let preyMin =
+      if p.maxToolTier == 1: 9
+      elif p.maxToolTier == 2: 17
+      else: 99
+    let wantUpgrade = preyMin < 99 and
       (swordHeld or bowHeld) and p.combLvl >= 4
     var pool: seq[tuple[r, c: int, t: Track]]
     if wantUpgrade:
       for e in near:
         let (_, hiU) = deltaBounds(p.combLvl, e.t.delta)
-        if dmgVs(e.t) >= 12 and hiU >= 9: pool.add e
+        if dmgVs(e.t) >= 12 and hiU >= preyMin: pool.add e
     if pool.len == 0:
       for e in near:
         if dmgVs(e.t) >= 12: pool.add e
@@ -645,7 +651,11 @@ proc decide(m: var Mind, p: Percept): int =
           nearTrack = true; break
       if not nearTrack:
         cands.add (e.r, e.c, e.delta, false)
-    let huntUpgrade = p.maxToolTier == 1 and
+    let preyMinH =
+      if p.maxToolTier == 1: 9
+      elif p.maxToolTier == 2: 17
+      else: 99
+    let huntUpgrade = preyMinH < 99 and
       (swordHeld or bowHeld) and p.combLvl >= 4
     var best = (999, 0, 0)
     for cand in cands:
@@ -656,7 +666,7 @@ proc decide(m: var Mind, p: Percept): int =
         if dmgVsDelta(cand.delta) < 12: continue
         if huntUpgrade:
           let (_, hiU) = deltaBounds(p.combLvl, cand.delta)
-          if hiU < 9: continue               # hunt t2-droppers only
+          if hiU < preyMinH: continue        # next-tier droppers only
       # isolated: no OTHER candidate/track within cheb 3 of it
       var lonely = true
       for other in cands:

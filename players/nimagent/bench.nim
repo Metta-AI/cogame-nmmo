@@ -82,7 +82,7 @@ proc main() =
     var lifeProf: array[4, int]
     var funnel: array[5, int]   # lives, kill, tool, sword, min>=4
     var armedCombSum, armedProfSum, armedLives: int
-    var armor24, armor48, t2tools: int
+    var armor24, armor48, t2tools, t2weap, prof9: int
 
     for t in 0 ..< ticks:
       # baseline seats
@@ -104,6 +104,8 @@ proc main() =
           if lifeComb[k] >= 2: inc funnel[1]
           if lifeTool[k] >= 1: inc funnel[2]
           if lifeTool[k] >= 2: inc t2tools
+          if lifeSword[k] >= 2: inc t2weap
+          if lifeProf[k] >= 9: inc prof9
           if lifeSword[k] >= 1: inc funnel[3]
           if lifeMin[k] >= 4: inc funnel[4]
           if lifeDef[k] >= 24: inc armor24
@@ -232,7 +234,8 @@ proc main() =
     echo &"  funnel: lives={funnel[0]} kill={funnel[1]} " &
       &"tool={funnel[2]} sword={funnel[3]} min4={funnel[4]} " &
       &"armed(comb,prof)=({armedCombSum},{armedProfSum})/{armedLives} " &
-      &"armor24={armor24} armor48={armor48} t2tool={t2tools}"
+      &"armor24={armor24} armor48={armor48} t2tool={t2tools} " &
+      &"t2weap={t2weap} prof9={prof9}"
 
   var nMean, bMean: float
   for s in allNim: nMean += s / float(allNim.len)
