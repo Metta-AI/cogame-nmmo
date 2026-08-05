@@ -53,6 +53,8 @@ type
     prevHp: int
     originTick*: int
     stillTicks: int               # consecutive ticks with no own move
+    lastCorpse*: tuple[tick, wr, wc: int]  # most recent corpse diff
+                                  # (window coords at sighting)
     dangerAnchors*: seq[tuple[r, c: int]]  # frame positions of bows
                                   # that actually HIT us this life -
                                   # leashed shooters, static all life
@@ -67,6 +69,7 @@ proc reset*(w: var WorldModel, tick: int) =
   w.prevHp = -1
   w.stillTicks = 0
   w.dangerAnchors = @[]
+  w.lastCorpse = (-999, 0, 0)
 
 proc initWorldModel*(): WorldModel =
   result.reset(0)
@@ -178,12 +181,14 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
       let et = p.tile(r, c, TbEntType)
       if et == 0: continue
       if p.tile(r, c, TbEntAnim) == AnimDeath:
-        # corpse frame: kill the matching track if any
+        # corpse frame: kill the matching track if any. Loot drops at
+        # kill sites and despawns in 20 ticks - note the sighting.
         let fpos = w.toFrame(r, c)
         var kept: seq[Track]
         for t in w.tracks:
           if cheb(t.pos, fpos) > 1: kept.add t
         w.tracks = kept
+        w.lastCorpse = (tick, r, c)
         continue
       hits.add (r, c, et)
 

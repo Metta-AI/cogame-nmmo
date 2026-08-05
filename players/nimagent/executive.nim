@@ -392,9 +392,15 @@ proc decide(m: var Mind, p: Percept): int =
   if p.hp < RecoverFloor: m.recovering = true
   if p.hp >= RecoverUntil: m.recovering = false
 
-  # kill detection -> loot sweep
+  # kill detection -> loot sweep. Comb-ups miss kills of WEAKER
+  # enemies (they drop loot too, measured funnel leak): any corpse
+  # sighted nearby also arms the ITEM-targeted sweep.
   if p.combLvl > m.prevComb: m.lootSweepLeft = 16
   m.prevComb = p.combLvl
+  if m.world.lastCorpse.tick == m.tick and
+      max(abs(m.world.lastCorpse.wr - CenterRow),
+          abs(m.world.lastCorpse.wc - CenterCol)) <= 4:
+    m.lootSweepLeft = max(m.lootSweepLeft, 16)
 
   let held = p.equipment(SlotHeld)
   let swordHeld = held != 0 and itemType(held) == ISword
