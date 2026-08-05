@@ -53,6 +53,11 @@ type
     prevHp: int
     originTick*: int
     stillTicks: int               # consecutive ticks with no own move
+    lastDiffTick*: array[WindowRows * WindowCols, int32]
+                                  # per-WINDOW-cell last entity-byte
+                                  # diff (residue is window-anchored,
+                                  # so no shifting): measured
+                                  # P(live|age<=3)~50%, age>10 ~2%
     lastCorpse*: tuple[tick, wr, wc: int]  # most recent corpse diff
                                   # (window coords at sighting)
     dangerAnchors*: seq[tuple[r, c: int]]  # frame positions of bows
@@ -70,6 +75,7 @@ proc reset*(w: var WorldModel, tick: int) =
   w.stillTicks = 0
   w.dangerAnchors = @[]
   w.lastCorpse = (-999, 0, 0)
+  for i in 0 ..< w.lastDiffTick.len: w.lastDiffTick[i] = -999
 
 proc initWorldModel*(): WorldModel =
   result.reset(0)
@@ -135,6 +141,7 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
         for b in TbEntType .. TbEntDir:
           if p.obs[base + b] != w.prevTiles[base + b]:
             changed[r * WindowCols + c] = true
+            w.lastDiffTick[r * WindowCols + c] = int32(tick)
             inc nChanged
             break
 
@@ -148,6 +155,7 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
     w.originTick = tick
     w.teleported = true
     w.prevHp = p.hp
+    for i in 0 ..< w.lastDiffTick.len: w.lastDiffTick[i] = -999
     return
 
   w.pos = (w.pos.r + shift.r, w.pos.c + shift.c)
@@ -360,6 +368,11 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
   copyMem(addr w.prevTiles[0], unsafeAddr p.obs[0],
           WindowRows * WindowCols * TileBytes)
   w.havePrev = true
+
+proc residueAge*(w: WorldModel, r, c, tick: int): int =
+  ## Ticks since this WINDOW cell last diffed (999 = never seen).
+  let v = w.lastDiffTick[r * WindowCols + c]
+  if v <= -999: 999 else: tick - int(v)
 
 proc noteAction*(w: var WorldModel, action: int) =
   w.lastAction = action
