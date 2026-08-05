@@ -38,6 +38,10 @@ type
     lastConfirmed*: int
     born*: int
     inferred*: bool
+    ghost*: bool                  # born from ghost-strike inference:
+                                  # expires fast, no residue-signature
+                                  # lease (its own residue would renew
+                                  # it forever)
 
   WorldModel* = object
     pos*: tuple[r, c: int]        # our frame position
@@ -48,6 +52,7 @@ type
     teleported*: bool
     prevHp: int
     originTick*: int
+    stillTicks: int               # consecutive ticks with no own move
 
 proc reset*(w: var WorldModel, tick: int) =
   w.originTick = tick
@@ -57,6 +62,7 @@ proc reset*(w: var WorldModel, tick: int) =
   w.lastAction = AtnNoop
   w.teleported = false
   w.prevHp = -1
+  w.stillTicks = 0
 
 proc initWorldModel*(): WorldModel =
   result.reset(0)
@@ -108,6 +114,8 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
   ## tick, BEFORE reading views, AFTER handling a life reset.
   let shift = w.ownShift(p)
   w.teleported = false
+  if shift == (0, 0): inc w.stillTicks
+  else: w.stillTicks = 0
 
   # entity-byte window diff (bytes 4..9 per cell); center cell is us
   var changed: array[WindowRows * WindowCols, bool]
@@ -195,6 +203,7 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
       t.pos = fpos
       t.obsPos = fpos
       t.inferred = false
+      t.ghost = false
       t.lastConfirmed = tick
       if kind != tkPlayer:
         t.delta = p.tile(h.r, h.c, TbEntDelta)
@@ -225,15 +234,22 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
     for pp in playerPos:
       if cheb(t.pos, pp) <= 2: nearPlayer = true; break
     # absence proofs disprove the PROPAGATED position, not the enemy:
-    # re-anchor to obsPos; delete only when the proof fires there too
+    # re-anchor to obsPos; delete only when the proof fires there too.
+    # MOTION-GATED: "an adjacent melee would be attacking (in_combat)"
+    # is only evidence while WE are stationary - a chaser legally
+    # alternates moves with a moving player and never attacks, so the
+    # proof fired on real chasers during walk-flees and teleported
+    # their tracks away (measured kill chain, session 5 probe).
+    let stationary = w.stillTicks >= 2
     if t.kind == tkMelee and man == 1 and not p.inCombat and
-        age >= 2 and not nearPlayer:
+        age >= 2 and not nearPlayer and stationary:
       if t.pos != t.obsPos:
         t.pos = t.obsPos
         kept.add t
       continue
     if t.kind == tkMelee and chebW((win.r, win.c)) <= 2 and
-        t.inferred and age >= 3 and not p.inCombat and not nearPlayer:
+        t.inferred and age >= 3 and not p.inCombat and not nearPlayer and
+        stationary:
       if t.pos != t.obsPos:
         t.pos = t.obsPos
         kept.add t
@@ -243,13 +259,18 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
     let sigOk = p.tile(win.r, win.c, TbEntType) != 0 and
       p.tile(win.r, win.c, TbEntElement) == t.element and
       p.tile(win.r, win.c, TbEntHp) == t.hpBucket
-    let limit =
+    var limit =
       if chebW((win.r, win.c)) <= 4:
         if p.inCombat: 20
         elif sigOk: 14
         else: TrackExpiryNear
       else:
         TrackExpiryFar
+    if t.ghost:
+      # ghost-born tracks sit on their own residue: the signature
+      # lease would renew them forever. Byte-confirmation clears the
+      # flag; otherwise they live 4 ticks.
+      limit = 4
     if age <= limit: kept.add t
   # dedup: same-kind tracks on one cell merge (keep fresher)
   var byCell = initTable[(int, int, TrackKind), Track]()
@@ -290,7 +311,37 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
           pos: fpos, obsPos: fpos, kind: tkMelee,
           delta: p.tile(r, c, TbEntDelta),
           hpBucket: p.tile(r, c, TbEntHp), element: 0,
-          lastConfirmed: tick, born: tick, inferred: true)
+          lastConfirmed: tick, born: tick, inferred: true,
+          ghost: true)
+      # bow ghost-strike: a stationary aligned bow shoots from
+      # stillness with zero diffs (never tracked). After an
+      # unexplained hit, aligned bow-signature residue within its
+      # 4-range IS the shooter - materialize it.
+      for dr in -4 .. 4:
+        for dc in -4 .. 4:
+          if dr != 0 and dc != 0: continue
+          if dr == 0 and dc == 0: continue
+          let r = CenterRow + dr
+          let c = CenterCol + dc
+          if r < 0 or r >= WindowRows or c < 0 or c >= WindowCols:
+            continue
+          if p.tile(r, c, TbEntType) != EntityEnemy or
+              p.tile(r, c, TbEntElement) == 0 or
+              p.tile(r, c, TbEntAnim) == AnimDeath:
+            continue
+          let fpos = w.toFrame(r, c)
+          var exists = false
+          for t in w.tracks:
+            if t.kind == tkBow and cheb(t.pos, fpos) <= 1:
+              exists = true; break
+          if exists: continue
+          w.tracks.add Track(
+            pos: fpos, obsPos: fpos, kind: tkBow,
+            delta: p.tile(r, c, TbEntDelta),
+            hpBucket: p.tile(r, c, TbEntHp),
+            element: p.tile(r, c, TbEntElement),
+            lastConfirmed: tick, born: tick, inferred: true,
+            ghost: true)
   w.prevHp = p.hp
 
   copyMem(addr w.prevTiles[0], unsafeAddr p.obs[0],

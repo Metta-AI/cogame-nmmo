@@ -17,7 +17,10 @@ const
   HerbHpCombat = 65
   RecoverFloor = 60
   RecoverUntil = 90
-  BowAvoid = 6
+  BowAvoid = 4    # a bow only ACTS on players inside its +-4 box
+                  # (enemy_ai scan, nmmo3.h:1592); range >= 5 is
+                  # harmless leashed wander - fleeing it was measured
+                  # pure cost (pushed agents into melee)
   EngageR = 4
   HerbStock = 2
 
@@ -176,7 +179,7 @@ proc flee(m: var Mind, p: Percept,
     if not p.passable(nr, nc) or (nr, nc) in occ: continue
     var bowOk = 1
     for b in bows:
-      if max(abs(nr - b.r), abs(nc - b.c)) <= 6 and
+      if max(abs(nr - b.r), abs(nc - b.c)) <= 4 and
           min(abs(nr - b.r), abs(nc - b.c)) <= 1:
         bowOk = 0; break
     var meleeOk = 1
@@ -197,7 +200,11 @@ proc wander(m: var Mind, p: Percept,
             roam: bool): int =
   if not roam and m.wanderLeft <= 0:
     inc m.idleTicks
-    if m.idleTicks < 30: return AtnNoop
+    # MOVEMENT DIET: the baseline net takes 1.2 deaths/1500t to our
+    # 6.9 in the same worlds (bow 3 vs 35) purely by near-zero
+    # roaming - every fresh aggro/bow box entered is a dice roll.
+    # Overwatch long, wander rarely and briefly.
+    if m.idleTicks < 120: return AtnNoop
   let blocked = m.lastMoveBlocked(p)
   var options: seq[int]
   for ai in 0 .. 3:
@@ -208,7 +215,7 @@ proc wander(m: var Mind, p: Percept,
     if not p.passable(nr, nc) or (nr, nc) in occ: continue
     var bad = false
     for b in bows:
-      if max(abs(nr - b.r), abs(nc - b.c)) <= 6 and
+      if max(abs(nr - b.r), abs(nc - b.c)) <= 4 and
           min(abs(nr - b.r), abs(nc - b.c)) <= 1:
         bad = true; break
     if bad: continue
@@ -220,7 +227,7 @@ proc wander(m: var Mind, p: Percept,
   if m.wanderLeft <= 0 or blocked or m.wanderAction notin options:
     if options.len == 0: return AtnNoop
     m.wanderAction = options[m.rng.rand(options.len - 1)]
-    m.wanderLeft = 6 + m.rng.rand(5)
+    m.wanderLeft = 3 + m.rng.rand(2)
   dec m.wanderLeft
   if m.wanderLeft <= 0: m.idleTicks = 0
   if m.wanderLeft mod 3 == 0: return AtnNoop
@@ -290,6 +297,8 @@ proc harvestTarget(p: Percept): tuple[ok: bool, r, c: int] =
     else:
       continue
     let dist = abs(it.r - CenterRow) + abs(it.c - CenterCol)
+    if dist > 5: continue    # movement diet: distant items are not
+                             # worth the aggro/bow boxes on the way
     let key = (priority, dist)
     if key < bestKey:
       bestKey = key
@@ -351,7 +360,7 @@ proc decide(m: var Mind, p: Percept): int =
       bowClose.add b
   var hereFunnel = false
   for b in bowClose:
-    if max(abs(CenterRow - b.r), abs(CenterCol - b.c)) <= 6 and
+    if max(abs(CenterRow - b.r), abs(CenterCol - b.c)) <= 4 and
         min(abs(CenterRow - b.r), abs(CenterCol - b.c)) <= 1:
       hereFunnel = true; break
   if bowClose.len > 0 and not armored:

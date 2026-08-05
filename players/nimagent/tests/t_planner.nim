@@ -57,7 +57,8 @@ proc step(m: var MiniMelee, action: int, target: int) =
       m.pr = dest[0]
       m.pc = dest[1]
       inc m.movedTicks
-  # enemies respond
+  # enemies respond (aggro cutoff: outside the +-4 box they idle -
+  # enemy_ai scans only its own box, nmmo3.h:1592)
   o = m.occ()
   for i in 0 ..< m.enemies.len:
     if m.enemies[i].hp <= 0: continue
@@ -65,6 +66,7 @@ proc step(m: var MiniMelee, action: int, target: int) =
     let c = m.enemies[i].c
     let dr = m.pr - r
     let dc = m.pc - c
+    if max(abs(dr), abs(dc)) > 4: continue
     if abs(dr) + abs(dc) == 1:
       m.dmgTaken += m.enemies[i].dmg
       inc m.hitsTaken

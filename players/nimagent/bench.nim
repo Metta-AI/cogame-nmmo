@@ -5,10 +5,18 @@
 # Nim seats via the ground-truth export (same classes as
 # tools/dancer_bench.py).
 #
-# Usage: bench [nseeds] [ticks] [seed0]
+# Usage: bench [nseeds] [ticks] [seed0] [-probe]
+#   -probe: per-death forensics — killer-tracked x branch aggregate +
+#   the last 8 decision rows of each death (dancer_probe.py port).
 
 import std/[os, strformat, strutils, tables]
 import simlink, percept, world, executive, brainlink
+
+type ProbeRow = object
+  tick, hp, mn, life: int
+  branch: string
+  act: int
+  tracked: string
 
 proc classifyDeath(gt: seq[GtEnemy], hpPrev: int): string =
   var mel, bow = 0
@@ -29,13 +37,22 @@ proc classifyDeath(gt: seq[GtEnemy], hpPrev: int): string =
   else: "unclear"
 
 proc main() =
-  let nseeds = if paramCount() >= 1: parseInt(paramStr(1)) else: 8
-  let ticks = if paramCount() >= 2: parseInt(paramStr(2)) else: 1500
-  let seed0 = if paramCount() >= 3: parseInt(paramStr(3)) else: 1
+  var args: seq[string]
+  var probe = false
+  for i in 1 .. paramCount():
+    if paramStr(i) == "-probe": probe = true
+    else: args.add paramStr(i)
+  let nseeds = if args.len >= 1: parseInt(args[0]) else: 8
+  let ticks = if args.len >= 2: parseInt(args[1]) else: 1500
+  let seed0 = if args.len >= 3: parseInt(args[2]) else: 1
 
   var allNim, allBase: seq[float]
   var deathClasses = initCountTable[string]()
+  var baseDeathClasses = initCountTable[string]()
+  var probeAgg = initCountTable[string]()
+  var probeReports = 0
   var totDeaths = 0
+  var totBaseDeaths = 0
   var maxComb = 0
 
   for si in 0 ..< nseeds:
@@ -52,8 +69,12 @@ proc main() =
       minds[i] = initMind(1000 + seed, i)
     var brainObs = newSeq[uint8](4 * ObsSize)
     var prevHp: array[4, int]
-    for i in 0 ..< 4: prevHp[i] = 99
+    var prevHpBase: array[4, int]
+    for i in 0 ..< 4:
+      prevHp[i] = 99
+      prevHpBase[i] = 99
     var buf: array[ObsSize, uint8]
+    var hist: array[4, seq[ProbeRow]]
 
     for t in 0 ..< ticks:
       # baseline seats
@@ -74,16 +95,77 @@ proc main() =
           minds[k].tick = t
           minds[k].reset()
         copyMem(addr buf[0], addr obs[pid * ObsSize], ObsSize)
-        act[pid] = cfloat(minds[k].act(buf))
+        let p = initPercept(buf)
+        let a = minds[k].act(buf)
+        act[pid] = cfloat(a)
+        if probe:
+          var tr = ""
+          for e in minds[k].world.enemies(tkMelee):
+            tr.add &"m({e.r - CenterRow},{e.c - CenterCol},d{e.t.delta}," &
+              &"a{minds[k].tick - 1 - e.t.lastConfirmed}) "
+          for e in minds[k].world.enemies(tkBow):
+            tr.add &"b({e.r - CenterRow},{e.c - CenterCol}) "
+          hist[k].add ProbeRow(
+            tick: t, hp: p.hp, mn: min(p.combLvl, p.profLvl),
+            life: 0, branch: minds[k].branch, act: a, tracked: tr)
+          if hist[k].len > 8: hist[k].delete(0)
       # pre-step ground truth for fatal-tick classification
       var gtNow: array[4, seq[GtEnemy]]
+      var gtBase: array[4, seq[GtEnemy]]
       for k in 0 ..< 4:
         gtNow[k] = groundTruth(nimIdx[k])
+        gtBase[k] = groundTruth(baseIdx[k])
       nmmoStep()
+      for k in 0 ..< 4:
+        let hp = int(agentStat(cint(baseIdx[k]), 7))
+        if hp == 0 and prevHpBase[k] > 0:
+          baseDeathClasses.inc classifyDeath(gtBase[k], prevHpBase[k])
+        if term[baseIdx[k]] > 0.5 and hp == 99:
+          baseDeathClasses.inc "stagnation"
+        prevHpBase[k] = hp
       for k in 0 ..< 4:
         let hp = int(agentStat(cint(nimIdx[k]), 7))
         if hp == 0 and prevHp[k] > 0:
-          deathClasses.inc classifyDeath(gtNow[k], prevHp[k])
+          let cls = classifyDeath(gtNow[k], prevHp[k])
+          deathClasses.inc cls
+          if probe:
+            # killer-tracked classification (dancer_probe port)
+            var killers: seq[GtEnemy]
+            for e in gtNow[k]:
+              if (abs(e.dr) + abs(e.dc) <= 1 and e.ranged == 0) or
+                  ((e.dr == 0 or e.dc == 0) and
+                   max(abs(e.dr), abs(e.dc)) <= 4 and e.ranged == 1):
+                killers.add e
+            var nMatch = 0
+            for e in killers:
+              var hit = false
+              for tk in minds[k].world.enemies(tkMelee):
+                if abs(tk.r - CenterRow - e.dr) <= 1 and
+                    abs(tk.c - CenterCol - e.dc) <= 1:
+                  hit = true; break
+              if not hit:
+                for tk in minds[k].world.enemies(tkBow):
+                  if abs(tk.r - CenterRow - e.dr) <= 1 and
+                      abs(tk.c - CenterCol - e.dc) <= 1:
+                    hit = true; break
+              if hit: inc nMatch
+            let tcls =
+              if killers.len == 0: "no-killer-visible"
+              elif nMatch == killers.len: "all-tracked"
+              elif nMatch > 0: "some-untracked"
+              else: "untracked"
+            let lastBranch =
+              if hist[k].len > 0: hist[k][^1].branch else: "?"
+            probeAgg.inc tcls & "|" & lastBranch
+            if probeReports < 10:
+              inc probeReports
+              echo &"=== death seed={seed} t={t} seat={k} [{tcls}/{cls}]"
+              for e in killers:
+                echo &"  killer rel=({e.dr},{e.dc}) L{e.level} " &
+                  &"ranged={e.ranged}"
+              for row in hist[k]:
+                echo &"  t{row.tick} hp={row.hp} mn={row.mn} " &
+                  &"{row.branch} act={row.act} {row.tracked}"
         if term[nimIdx[k]] > 0.5 and hp == 99:
           deathClasses.inc "stagnation"
         prevHp[k] = hp
@@ -102,6 +184,7 @@ proc main() =
       let bp = baseIdx[k]
       baseScores.add float(nmmoScore(cint(bp))) /
         float(agentStat(cint(bp), 1) + 1)
+      totBaseDeaths += int(agentStat(cint(bp), 1))
     allNim.add nimScores
     allBase.add baseScores
     var nMean, bMean: float
@@ -118,5 +201,12 @@ proc main() =
     &"{float(totDeaths) / float(allNim.len):.1f} | max comb={maxComb}"
   deathClasses.sort()
   echo "death classes: ", deathClasses
+  baseDeathClasses.sort()
+  echo &"baseline deaths/agent/{ticks}t = " &
+    &"{float(totBaseDeaths) / float(allBase.len):.1f} | classes: ",
+    baseDeathClasses
+  if probeAgg.len > 0:
+    probeAgg.sort()
+    echo "(killer-tracking | last-branch): ", probeAgg
 
 main()

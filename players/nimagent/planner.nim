@@ -49,6 +49,9 @@ proc stepEnemies(ctx: PlanCtx, pr, pc: int, epos: var seq[Cell],
                  alive: seq[bool]): float =
   ## All live enemies act vs player at (pr,pc): returns damage taken;
   ## mutates epos in place. List order; vacated cells free up.
+  ## AGGRO CUTOFF (enemy_ai, nmmo3.h:1592): an enemy only acts when a
+  ## player is inside its +-4 box - at Chebyshev >= 5 it reverts to
+  ## leashed wandering (modeled as a stall). Escape is absolute.
   var occ: seq[Cell]
   for i in 0 ..< epos.len:
     if alive[i]: occ.add epos[i]
@@ -57,6 +60,8 @@ proc stepEnemies(ctx: PlanCtx, pr, pc: int, epos: var seq[Cell],
     let (r, c) = epos[i]
     let dr = pr - r
     let dc = pc - c
+    if max(abs(dr), abs(dc)) > 4:
+      continue                       # outside its aggro box: idle
     if abs(dr) + abs(dc) == 1:
       result += ctx.enemies[i].dmg
       continue
@@ -79,7 +84,9 @@ proc leafValue(ctx: PlanCtx, pr, pc: int, epos: seq[Cell],
   for i in 0 ..< epos.len:
     if alive[i]:
       d = min(d, max(abs(epos[i].r - pr), abs(epos[i].c - pc)))
-  float(d) * (if ctx.intentKill: 0.05 else: 0.8)
+  result = float(d) * (if ctx.intentKill: 0.05 else: 0.8)
+  if d >= 5 and not ctx.intentKill:
+    result += 2.0       # outside every aggro box: fully disengaged
 
 proc search(ctx: PlanCtx, pr, pc: int, epos: seq[Cell],
             alive: seq[bool], thp: float, d: int):

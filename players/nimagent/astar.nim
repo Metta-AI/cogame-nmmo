@@ -28,7 +28,8 @@ proc idx(r, c: int): int {.inline.} = r * WindowCols + c
 proc initCostMap*(p: Percept,
                   bows: openArray[tuple[r, c: int]],
                   melee: openArray[tuple[r, c: int]],
-                  occ: openArray[tuple[r, c: int]]): CostMap =
+                  occ: openArray[tuple[r, c: int]],
+                  bowResidue: openArray[tuple[r, c: int]] = []): CostMap =
   ## Threat-cost field over the current window. Bow coords may lie
   ## outside the window (extended tracks); their funnel still projects
   ## into it.
@@ -46,8 +47,19 @@ proc initCostMap*(p: Percept,
       for c in 0 ..< WindowCols:
         let dr = abs(r - b.r)
         let dc = abs(c - b.c)
-        if max(dr, dc) <= 6 and min(dr, dc) <= 1:
+        if max(dr, dc) <= 4 and min(dr, dc) <= 1:
           result.cost[idx(r, c)] += int32(CostBowFunnel)
+  for b in bowResidue:
+    # UNTRACKED bow-signature residue: the bow that wrote it may still
+    # be nearby (leashed wander <= 3) and shoots diff-invisibly from
+    # stillness. Soft cost on its alignment band - route around when a
+    # clean path exists, never paralyze.
+    for r in 0 ..< WindowRows:
+      for c in 0 ..< WindowCols:
+        let dr = abs(r - b.r)
+        let dc = abs(c - b.c)
+        if max(dr, dc) <= 4 and min(dr, dc) <= 1:
+          result.cost[idx(r, c)] += int32(CostBowFunnel div 2)
   for m in melee:
     for r in max(0, m.r - 2) .. min(WindowRows - 1, m.r + 2):
       for c in max(0, m.c - 2) .. min(WindowCols - 1, m.c + 2):
