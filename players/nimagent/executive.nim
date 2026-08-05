@@ -48,6 +48,7 @@ type
     wanderLeft: int
     idleTicks: int
     branch*: string
+    huntBlacklist: seq[tuple[pos: tuple[r, c: int], tick: int]]
 
 proc reset*(m: var Mind) =
   inc m.generation
@@ -65,6 +66,7 @@ proc reset*(m: var Mind) =
   m.wanderLeft = 0
   m.idleTicks = 0
   m.branch = ""
+  m.huntBlacklist = @[]
 
 proc initMind*(seed, agentIdx: int): Mind =
   result.seed = seed
@@ -304,8 +306,9 @@ proc harvestTarget(p: Percept): tuple[ok: bool, r, c: int] =
     else:
       continue
     let dist = abs(it.r - CenterRow) + abs(it.c - CenterCol)
-    if dist > 5: continue    # movement diet: distant items are not
-                             # worth the aggro/bow boxes on the way
+    # movement diet applies UNGEARED; with a tool the prof flywheel is
+    # worth ranged (A*-costed) trips
+    if heldTier == 0 and dist > 5: continue
     let key = (priority, dist)
     if key < bestKey:
       bestKey = key
@@ -390,17 +393,19 @@ proc decide(m: var Mind, p: Percept): int =
   for e in melee:
     if max(abs(e.r - CenterRow), abs(e.c - CenterCol)) <= engageR:
       near.add e
+  proc dmgVsDelta(delta: int): float =
+    let (_, hiRaw) = deltaBounds(p.combLvl, delta)
+    let hi = min(hiRaw, 14)
+    float(BaseAttack + LevelMul * p.combLvl + eqAtk -
+          EnemyLevelMul * hi)
+  proc theirDmgVsDelta(delta: int): float =
+    let (_, hiRaw) = deltaBounds(p.combLvl, delta)
+    let hi = min(hiRaw, 14)
+    max(float(EnemyBase + EnemyLevelMul * hi - LevelMul * p.combLvl -
+              eqDef), 0.0)
   if near.len > 0:
-    proc dmgVs(t: Track): float =
-      let (_, hiRaw) = deltaBounds(p.combLvl, t.delta)
-      let hi = min(hiRaw, 14)
-      float(BaseAttack + LevelMul * p.combLvl + eqAtk -
-            EnemyLevelMul * hi)
-    proc theirDmgVs(t: Track): float =
-      let (_, hiRaw) = deltaBounds(p.combLvl, t.delta)
-      let hi = min(hiRaw, 14)
-      max(float(EnemyBase + EnemyLevelMul * hi - LevelMul * p.combLvl -
-                eqDef), 0.0)
+    proc dmgVs(t: Track): float = dmgVsDelta(t.delta)
+    proc theirDmgVs(t: Track): float = theirDmgVsDelta(t.delta)
     # target: the SOFTEST worthwhile enemy nearby, else nearest
     var pool: seq[tuple[r, c: int, t: Track]]
     for e in near:
@@ -499,6 +504,75 @@ proc decide(m: var Mind, p: Percept): int =
       if ok:
         m.branch = "loot"
         return act
+
+  # HUNT - the flywheel starter. The score gap is banked-min (1.8 vs
+  # ~7/life), not deaths: one bare-hand kill converts the whole game
+  # (kill -> tool -> prof -> sword -> zero-damage dance farm -> armor).
+  # Waiting for fights starves the chain; seek the cheap ones.
+  # Residue imprints are legal HUNT candidates (unlike avoidance -
+  # refuted 3x): a false positive costs a short walk, and a real enemy
+  # aggros into a live track at range 4 where the engage branch takes
+  # over with the exact-model planner.
+  block hunt:
+    if m.recovering or bowClose.len > 0: break hunt
+    var wantBare = false
+    if p.heldToolTier == 0 and not swordHeld and p.hp >= 95:
+      wantBare = true
+    elif not (swordHeld and p.combLvl <= p.profLvl and p.hp >= 70):
+      break hunt
+    # candidate set: tracked melee (exact) + melee-signature residue
+    var cands: seq[tuple[r, c, delta: int, tracked: bool]]
+    for e in melee:
+      cands.add (e.r, e.c, e.t.delta, true)
+    for e in p.enemyCells:
+      if e.element != 0: continue
+      var nearTrack = false
+      for mm in meleeCells:
+        if max(abs(e.r - mm.r), abs(e.c - mm.c)) <= 1:
+          nearTrack = true; break
+      if not nearTrack:
+        cands.add (e.r, e.c, e.delta, false)
+    var best = (999, 0, 0)
+    for cand in cands:
+      # winnable?
+      if wantBare:
+        if cand.delta > 0: continue          # bare-hand: d0 only
+      else:
+        if dmgVsDelta(cand.delta) < 12: continue
+      # isolated: no OTHER candidate/track within cheb 3 of it
+      var lonely = true
+      for other in cands:
+        if (other.r, other.c) == (cand.r, cand.c): continue
+        if max(abs(other.r - cand.r), abs(other.c - cand.c)) <= 3:
+          lonely = false; break
+      if not lonely: continue
+      # not in any tracked-bow danger zone
+      var bowBad = false
+      for b in bows:
+        if bowDanger(cand.r, cand.c, b.r, b.c): bowBad = true; break
+      if bowBad: continue
+      # not recently hunted-and-empty (residue ghosts)
+      if not cand.tracked:
+        let fpos = m.world.toFrame(cand.r, cand.c)
+        var burned = false
+        for bl in m.huntBlacklist:
+          if max(abs(bl.pos.r - fpos.r), abs(bl.pos.c - fpos.c)) <= 1 and
+              m.tick - bl.tick < 300:
+            burned = true; break
+        if burned: continue
+      let d = abs(cand.r - CenterRow) + abs(cand.c - CenterCol)
+      if d < best[0]: best = (d, cand.r, cand.c)
+    if best[0] == 999: break hunt
+    if best[0] <= 1:
+      # arrived at a residue candidate and nothing engaged: it is a
+      # ghost - burn it so hunt moves on
+      m.huntBlacklist.add ((m.world.toFrame(best[1], best[2]), m.tick))
+      break hunt
+    let cm = initCostMap(p, bows, meleeCells, occ)
+    let (okH, actH) = cm.safeRoute(best[1], best[2])
+    if okH:
+      m.branch = "hunt"
+      return actH
 
   # recovery: sit and regen
   if m.recovering:

@@ -178,7 +178,8 @@ proc main() =
       nimScores.add float(nmmoScore(cint(pid))) /
         float(agentStat(cint(pid), 1) + 1)
       deaths[k] = int(agentStat(cint(pid), 1))
-      combs[k] = int(agentStat(cint(pid), 2))
+      combs[k] = min(int(agentStat(cint(pid), 2)),
+                     int(agentStat(cint(pid), 3)))  # min(comb,prof)
       totDeaths += deaths[k]
       maxComb = max(maxComb, combs[k])
       let bp = baseIdx[k]
@@ -191,7 +192,7 @@ proc main() =
     for s in nimScores: nMean += s / 4
     for s in baseScores: bMean += s / 4
     echo &"seed {seed}: nim={nMean:.2f} base={bMean:.2f} " &
-      &"deaths={deaths} combs={combs}"
+      &"deaths={deaths} mins={combs}"
 
   var nMean, bMean: float
   for s in allNim: nMean += s / float(allNim.len)
