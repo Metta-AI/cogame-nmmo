@@ -35,6 +35,8 @@ type
     sword: bool
     intentKill: bool
     w: float
+    hp: float            # our hp: cumulative damage >= hp is DEATH,
+                         # not a recoverable cost
     passable: proc (r, c: int): bool {.closure.}
     occupied: seq[Cell]
     hazards: seq[Cell]
@@ -89,8 +91,8 @@ proc leafValue(ctx: PlanCtx, pr, pc: int, epos: seq[Cell],
     result += 2.0       # outside every aggro box: fully disengaged
 
 proc search(ctx: PlanCtx, pr, pc: int, epos: seq[Cell],
-            alive: seq[bool], thp: float, d: int):
-    tuple[v: float, a: int] =
+            alive: seq[bool], thp: float, d: int,
+            hpLeft: float): tuple[v: float, a: int] =
   if ctx.targetIdx >= 0 and thp <= 0:
     return (KillBonus + float(d) * 2.0, AtnNoop)
   if d == 0:
@@ -131,10 +133,16 @@ proc search(ctx: PlanCtx, pr, pc: int, epos: seq[Cell],
     else:
       var nepos = epos
       let taken = ctx.stepEnemies(cand.npr, cand.npc, nepos, alive)
-      let sub = ctx.search(cand.npr, cand.npc, nepos, alive, nthp, d - 1)
-      val = sub.v +
-        (if cand.attacked: ctx.dmg * HitCredit else: 0.0) -
-        ctx.w * taken / 10.0
+      let nhpLeft = hpLeft - taken
+      if nhpLeft <= 0:
+        # this line kills us: terminal, catastrophic, sooner is worse
+        val = -1000.0 - float(d)
+      else:
+        let sub = ctx.search(cand.npr, cand.npc, nepos, alive, nthp,
+                             d - 1, nhpLeft)
+        val = sub.v +
+          (if cand.attacked: ctx.dmg * HitCredit else: 0.0) -
+          ctx.w * taken / 10.0
     if (cand.npr, cand.npc) != (pr, pc):
       if (cand.npr, cand.npc) in ctx.occupied: val -= OccPenalty
       if (cand.npr, cand.npc) in ctx.hazards: val -= HazardPenalty
@@ -152,13 +160,15 @@ proc planMelee*(ourR, ourC: int,
                 passable: proc (r, c: int): bool {.closure.},
                 occupied: seq[Cell] = @[],
                 hazards: seq[Cell] = @[],
-                depth = Depth): int =
+                depth = Depth,
+                ourHp = 99.0): int =
   ## Best action for the local melee state. Any consistent integer
   ## frame (window cells work).
   var ctx = PlanCtx(
     enemies: enemies, targetIdx: targetIdx,
     dmg: max(ourDmg, 0.0), sword: sword, intentKill: intentKill,
     w: (if intentKill and ourDmg > 0: WKill else: WAvoid),
+    hp: ourHp,
     passable: passable, occupied: occupied, hazards: hazards)
   var epos: seq[Cell]
   var alive: seq[bool]
@@ -166,4 +176,4 @@ proc planMelee*(ourR, ourC: int,
     epos.add (e.r, e.c)
     alive.add true
   let thp = if targetIdx >= 0: float(enemies[targetIdx].hp) else: 1.0
-  ctx.search(ourR, ourC, epos, alive, thp, depth).a
+  ctx.search(ourR, ourC, epos, alive, thp, depth, ourHp).a

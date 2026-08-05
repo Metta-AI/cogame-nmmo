@@ -165,6 +165,15 @@ proc urgentComb(m: Mind, p: Percept): bool =
 proc lastMoveBlocked(m: Mind, p: Percept): bool =
   (isMove(m.lastAction) or isRun(m.lastAction)) and p.anim == 0
 
+proc bowDanger*(r, c, br, bc: int): bool =
+  ## Cell (r,c) is in bow (br,bc)'s danger zone: aligned within 5 (an
+  ## aligned bow at range 5 is one wander-step from a 99-dmg shot) or
+  ## one-step-from-aligned within its 4-box.
+  let dr = abs(r - br)
+  let dc = abs(c - bc)
+  (min(dr, dc) == 0 and max(dr, dc) <= 5) or
+    (min(dr, dc) == 1 and max(dr, dc) <= 4)
+
 proc flee(m: var Mind, p: Percept,
           cells: seq[tuple[r, c: int]],
           bows, melee: seq[tuple[r, c: int]],
@@ -179,8 +188,7 @@ proc flee(m: var Mind, p: Percept,
     if not p.passable(nr, nc) or (nr, nc) in occ: continue
     var bowOk = 1
     for b in bows:
-      if max(abs(nr - b.r), abs(nc - b.c)) <= 4 and
-          min(abs(nr - b.r), abs(nc - b.c)) <= 1:
+      if bowDanger(nr, nc, b.r, b.c):
         bowOk = 0; break
     var meleeOk = 1
     for mm in melee:
@@ -215,8 +223,7 @@ proc wander(m: var Mind, p: Percept,
     if not p.passable(nr, nc) or (nr, nc) in occ: continue
     var bad = false
     for b in bows:
-      if max(abs(nr - b.r), abs(nc - b.c)) <= 4 and
-          min(abs(nr - b.r), abs(nc - b.c)) <= 1:
+      if bowDanger(nr, nc, b.r, b.c):
         bad = true; break
     if bad: continue
     for mm in melee:
@@ -331,9 +338,18 @@ proc decide(m: var Mind, p: Percept): int =
     return AtnNoop
   m.selling = false
 
-  # herb
+  # herb - but NEVER while standing in an unarmored bow danger zone:
+  # eating mid-lane means taking the next arrow at heal-tick (measured
+  # death t970 seed 1). The bow-flee branch below breaks alignment
+  # first; the herb fires next tick.
+  var inBowLane = false
+  block laneChk:
+    for b in bows:
+      if bowDanger(CenterRow, CenterCol, b.r, b.c):
+        inBowLane = true
+        break laneChk
   let limit = if p.inCombat: HerbHpCombat else: HerbHp
-  if p.hp < limit:
+  if p.hp < limit and not (inBowLane and p.eqDef < 40):
     let herb = p.herbSlot
     if herb >= 0:
       m.branch = "herb"
@@ -355,21 +371,18 @@ proc decide(m: var Mind, p: Percept): int =
 
   # bow safety (hard until armored); melee-aware flee
   var bowClose: seq[tuple[r, c: int]]
-  for b in bows:
-    if max(abs(b.r - CenterRow), abs(b.c - CenterCol)) <= BowAvoid:
-      bowClose.add b
   var hereFunnel = false
+  for b in bows:
+    if max(abs(b.r - CenterRow), abs(b.c - CenterCol)) <= 5:
+      bowClose.add b
+    if bowDanger(CenterRow, CenterCol, b.r, b.c):
+      hereFunnel = true
+  var dNow = 99
   for b in bowClose:
-    if max(abs(CenterRow - b.r), abs(CenterCol - b.c)) <= 4 and
-        min(abs(CenterRow - b.r), abs(CenterCol - b.c)) <= 1:
-      hereFunnel = true; break
-  if bowClose.len > 0 and not armored:
-    var dNow = 99
-    for b in bowClose:
-      dNow = min(dNow, max(abs(CenterRow - b.r), abs(CenterCol - b.c)))
-    if hereFunnel or dNow <= 4:
-      m.branch = "bow-flee"
-      return m.flee(p, bowClose, bows, meleeCells, occ)
+    dNow = min(dNow, max(abs(CenterRow - b.r), abs(CenterCol - b.c)))
+  if not armored and (hereFunnel or dNow <= 4):
+    m.branch = "bow-flee"
+    return m.flee(p, bowClose, bows, meleeCells, occ)
 
   # melee engagement via the planner
   let engageR = EngageR + (if m.recovering: 2 else: 0)
@@ -452,8 +465,9 @@ proc decide(m: var Mind, p: Percept): int =
       if not isEnemy: occSoft.add cell
     var hazards: seq[tuple[r, c: int]]
     for b in bows:
-      for rr in b.r - 4 .. b.r + 4: hazards.add (rr, b.c)
-      for cc in b.c - 4 .. b.c + 4: hazards.add (b.r, cc)
+      for rr in b.r - 5 .. b.r + 5:
+        for cc in b.c - 5 .. b.c + 5:
+          if bowDanger(rr, cc, b.r, b.c): hazards.add (rr, cc)
     for s in stale:
       hazards.add s
       for d in MoveDeltas:
@@ -463,7 +477,7 @@ proc decide(m: var Mind, p: Percept): int =
     return planMelee(CenterRow, CenterCol, enemies, tidx, ourDmg,
                      swordHeld, intentKill,
                      proc (r, c: int): bool = pp.passable(r, c),
-                     occSoft, hazards)
+                     occSoft, hazards, ourHp = float(p.hp))
 
   # loot sweep (A*-routed)
   if m.lootSweepLeft > 0:

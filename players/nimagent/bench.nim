@@ -157,7 +157,7 @@ proc main() =
             let lastBranch =
               if hist[k].len > 0: hist[k][^1].branch else: "?"
             probeAgg.inc tcls & "|" & lastBranch
-            if probeReports < 10:
+            if probeReports < 40:
               inc probeReports
               echo &"=== death seed={seed} t={t} seat={k} [{tcls}/{cls}]"
               for e in killers:
