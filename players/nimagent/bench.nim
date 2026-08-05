@@ -76,6 +76,9 @@ proc main() =
     var buf: array[ObsSize, uint8]
     var hist: array[4, seq[ProbeRow]]
     var branchTicks: array[4, CountTable[string]]
+    # chain funnel: per life, which stage was reached
+    var lifeComb, lifeTool, lifeSword, lifeMin: array[4, int]
+    var funnel: array[5, int]   # lives, kill, tool, sword, min>=4
 
     for t in 0 ..< ticks:
       # baseline seats
@@ -93,10 +96,21 @@ proc main() =
       for k in 0 ..< 4:
         let pid = nimIdx[k]
         if term[pid] > 0.5:
+          inc funnel[0]
+          if lifeComb[k] >= 2: inc funnel[1]
+          if lifeTool[k] >= 1: inc funnel[2]
+          if lifeSword[k] >= 1: inc funnel[3]
+          if lifeMin[k] >= 4: inc funnel[4]
+          lifeComb[k] = 0; lifeTool[k] = 0
+          lifeSword[k] = 0; lifeMin[k] = 0
           minds[k].tick = t
           minds[k].reset()
         copyMem(addr buf[0], addr obs[pid * ObsSize], ObsSize)
         let p = initPercept(buf)
+        lifeComb[k] = max(lifeComb[k], p.combLvl)
+        lifeTool[k] = max(lifeTool[k], p.maxToolTier)
+        lifeSword[k] = max(lifeSword[k], p.bestSwordTier)
+        lifeMin[k] = max(lifeMin[k], min(p.combLvl, p.profLvl))
         let a = minds[k].act(buf)
         act[pid] = cfloat(a)
         if probe:
@@ -200,6 +214,8 @@ proc main() =
         branchTicks[k].sort()
         echo &"  seat{k} d={deaths[k]} min={combs[k]} branches: ",
           branchTicks[k]
+    echo &"  funnel: lives={funnel[0]} kill={funnel[1]} " &
+      &"tool={funnel[2]} sword={funnel[3]} min4={funnel[4]}"
 
   var nMean, bMean: float
   for s in allNim: nMean += s / float(allNim.len)

@@ -115,7 +115,7 @@ proc bestUnequipped(p: Percept, t: int): tuple[slot, tier: int] =
       if result.slot < 0 or itemTier(item) > result.tier:
         result = (i, itemTier(item))
 
-proc maxToolTier(p: Percept): int =
+proc maxToolTier*(p: Percept): int =
   for i in 0 ..< InventorySlots:
     let item = p.inventory(i)
     if item != 0 and itemType(item) == ITool:
@@ -124,13 +124,22 @@ proc maxToolTier(p: Percept): int =
   if held != 0 and itemType(held) == ITool:
     result = max(result, itemTier(held))
 
-proc bestSwordTier(p: Percept): int =
+proc bestSwordTier*(p: Percept): int =
   for i in 0 ..< InventorySlots:
     let item = p.inventory(i)
     if item != 0 and itemType(item) == ISword:
       result = max(result, itemTier(item))
   let held = p.equipment(SlotHeld)
   if held != 0 and itemType(held) == ISword:
+    result = max(result, itemTier(held))
+
+proc bestBowTier*(p: Percept): int =
+  for i in 0 ..< InventorySlots:
+    let item = p.inventory(i)
+    if item != 0 and itemType(item) == IBow:
+      result = max(result, itemTier(item))
+  let held = p.equipment(SlotHeld)
+  if held != 0 and itemType(held) == IBow:
     result = max(result, itemTier(held))
 
 proc allInventoryFull(p: Percept): bool =
@@ -261,7 +270,8 @@ proc equipAction(p: Percept, swordHeld: bool): int =
       let s = slotOf(p, cur, equipped = true)
       if s >= 0: return AtnOne + s
   let want =
-    if p.bestSwordTier > 0 and p.combLvl <= p.profLvl: ISword
+    if p.bestBowTier > 0 and p.combLvl <= p.profLvl: IBow
+    elif p.bestSwordTier > 0 and p.combLvl <= p.profLvl: ISword
     else: ITool
   let best = bestUnequipped(p, want)
   let held = p.equipment(SlotHeld)
@@ -283,7 +293,8 @@ proc harvestTarget(p: Percept): tuple[ok: bool, r, c: int] =
   let heldTier = p.heldToolTier
   let herbs = p.herbCount
   if p.allInventoryFull: return (false, 0, 0)
-  let needSword = p.bestSwordTier < max(heldTier, 1)
+  let needSword = p.bestSwordTier < max(heldTier, 1) and
+    p.bestBowTier < max(heldTier, 1)
   var armorNeeds: seq[int]
   for atype in [IHelm, IChest, ILegs]:
     let cur = p.equipment(armorSlot(atype))
@@ -299,7 +310,7 @@ proc harvestTarget(p: Percept): tuple[ok: bool, r, c: int] =
         it.itype == IHerb or
         (it.itype >= IGemFirst and it.itype <= IGemLast):
       if it.tier > heldTier: continue
-      if it.itype == IHilt and needSword:
+      if (it.itype == IHilt or it.itype == IWood) and needSword:
         priority = 0.5
       elif float(p.profLvl) < tierLevel(it.tier):
         priority = 1.0 - 0.1 * float(it.tier)
@@ -387,6 +398,7 @@ proc decide(m: var Mind, p: Percept): int =
 
   let held = p.equipment(SlotHeld)
   let swordHeld = held != 0 and itemType(held) == ISword
+  let bowHeld = held != 0 and itemType(held) == IBow
   let eqAtk = p.eqAtk
   let eqDef = p.eqDef
   let armored = eqDef >= 40
@@ -514,7 +526,8 @@ proc decide(m: var Mind, p: Percept): int =
     return planMelee(CenterRow, CenterCol, enemies, tidx, ourDmg,
                      swordHeld, intentKill,
                      proc (r, c: int): bool = pp.passable(r, c),
-                     occSoft, hazards, ourHp = float(p.hp))
+                     occSoft, hazards, ourHp = float(p.hp),
+                     bowHeld = bowHeld)
 
   # loot sweep (A*-routed)
   if m.lootSweepLeft > 0:

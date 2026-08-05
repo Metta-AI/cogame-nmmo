@@ -15,6 +15,7 @@ type
     enemies: seq[MiniEnemy]
     ourDmg: float
     sword: bool
+    bow: bool
     walls: seq[tuple[r, c: int]]
     hitsDealt, hitsTaken: int
     dmgTaken: float
@@ -30,6 +31,8 @@ proc passable(m: MiniMelee, r, c: int): bool = (r, c) notin m.walls
 proc inArc(m: MiniMelee, r, c: int): bool =
   let ar = abs(r - m.pr)
   let ac = abs(c - m.pc)
+  if m.bow:
+    return (ar == 0 or ac == 0) and max(ar, ac) <= 4 and ar + ac > 0
   ar + ac == 1 or (m.sword and ar == 1 and ac == 1)
 
 proc occ(m: MiniMelee): seq[tuple[r, c: int]] =
@@ -101,7 +104,8 @@ proc drive(m: var MiniMelee, target: int, intentKill: bool,
     let mm = m   # capture snapshot for the closure
     let act = planMelee(m.pr, m.pc, enemies, tidx, m.ourDmg, m.sword,
                         intentKill,
-                        proc (r, c: int): bool = mm.passable(r, c))
+                        proc (r, c: int): bool = mm.passable(r, c),
+                        bowHeld = m.bow)
     m.step(act, target)
     if target >= 0 and m.enemies[target].hp <= 0: return
 
@@ -207,5 +211,32 @@ block twoChaserCorner:
   doAssert m.movedTicks >= 5, "stand-and-tank: moved " & $m.movedTicks
   echo "two-chaser-corner: OK (dmg ", m.dmgTaken, ", moved ",
     m.movedTicks, ")"
+
+block bowKiteKill:
+  # held bow (on-axis <=4): kill ANY hittable melee with ZERO damage
+  # in the open - the chaser aligns itself, we shoot aligned and step
+  # away otherwise; it can never reach Manhattan-1
+  for start in [(4, 0), (0, 4), (3, 2), (-2, -3)]:
+    var m = initMini(0, 0,
+      @[MiniEnemy(r: start[0], c: start[1], dmg: 60.0, hp: 99)],
+      30.0, sword = false)
+    m.bow = true
+    m.drive(0, intentKill = true, ticks = 80)
+    doAssert m.enemies[0].hp <= 0, "bow-kite no kill from " & $start
+    doAssert m.dmgTaken == 0,
+      "bow-kite took " & $m.dmgTaken & " from " & $start
+  echo "bow-kite-kill: OK"
+
+block bowKiteBystander:
+  # kite one melee while a second approaches: kill, <=1 hit
+  var m = initMini(0, 0,
+    @[MiniEnemy(r: 4, c: 0, dmg: 45.0, hp: 99),
+      MiniEnemy(r: 0, c: 8, dmg: 60.0, hp: 99)],
+    30.0, sword = false)
+  m.bow = true
+  m.drive(0, intentKill = true, ticks = 80)
+  doAssert m.enemies[0].hp <= 0, "target survived"
+  doAssert m.hitsTaken <= 1, "bystander hits " & $m.hitsTaken
+  echo "bow-kite-bystander: OK"
 
 echo "L2 GATE OK"

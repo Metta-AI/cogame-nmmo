@@ -33,6 +33,8 @@ type
     targetIdx: int       # -1 = pure escape
     dmg: float           # our damage per hit (0 = cannot hurt)
     sword: bool
+    bow: bool            # held bow: attack arc is ON-AXIS <= 4
+                         # (ATTACK_BOW, nmmo3.h:891) - the kite weapon
     intentKill: bool
     w: float
     hp: float            # our hp: cumulative damage >= hp is DEATH,
@@ -44,6 +46,8 @@ type
 proc inArc(ctx: PlanCtx, pr, pc, r, c: int): bool =
   let ar = abs(r - pr)
   let ac = abs(c - pc)
+  if ctx.bow:
+    return (ar == 0 or ac == 0) and max(ar, ac) <= 4 and ar + ac > 0
   if ar + ac == 1: return true
   ctx.sword and ar == 1 and ac == 1
 
@@ -161,13 +165,15 @@ proc planMelee*(ourR, ourC: int,
                 occupied: seq[Cell] = @[],
                 hazards: seq[Cell] = @[],
                 depth = Depth,
-                ourHp = 99.0): int =
+                ourHp = 99.0,
+                bowHeld = false): int =
   ## Best action for the local melee state. Any consistent integer
   ## frame (window cells work).
   var ctx = PlanCtx(
     enemies: enemies, targetIdx: targetIdx,
     dmg: max(ourDmg, 0.0), sword: sword, intentKill: intentKill,
     w: (if intentKill and ourDmg > 0: WKill else: WAvoid),
+    bow: bowHeld,
     hp: ourHp,
     passable: passable, occupied: occupied, hazards: hazards)
   var epos: seq[Cell]
