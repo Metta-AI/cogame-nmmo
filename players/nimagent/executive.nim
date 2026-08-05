@@ -21,7 +21,9 @@ const
                   # (enemy_ai scan, nmmo3.h:1592); range >= 5 is
                   # harmless leashed wander - fleeing it was measured
                   # pure cost (pushed agents into melee)
-  EngageR = 4
+  EngageR = 6   # react OUTSIDE the enemy's 4-box: planner control
+                # begins before contact, so declining a fight is a
+                # 1-2 step exit instead of a chased escape
   HerbStock = 2
 
   BaseAttack = 40
@@ -426,9 +428,15 @@ proc decide(m: var Mind, p: Percept): int =
     let ourDmg = dmgVs(tgt.t)
     let theirDmg = theirDmgVs(tgt.t)
     let eHp = tgt.t.hpBucket * 20 + 10
+    # bystander tolerance 3: the MiniMelee bystander gate proved the
+    # planner kills with <=1 hit from a distant second enemy, and the
+    # death-aware search prices the rest. Only an enemy within 3
+    # blocks kill intent.
     var second = false
     for e in near:
-      if e.t != tgt.t: second = true; break
+      if e.t != tgt.t and
+          max(abs(e.r - CenterRow), abs(e.c - CenterCol)) <= 3:
+        second = true; break
     let wantComb = p.combLvl <= p.profLvl or p.heldToolTier == 0 or
       m.urgentComb(p)
     let hitsNeeded =
@@ -444,11 +452,13 @@ proc decide(m: var Mind, p: Percept): int =
       var farOk = true
       for e in near:
         if e.t != tgt.t and
-            max(abs(e.r - CenterRow), abs(e.c - CenterCol)) <= 5:
+            max(abs(e.r - CenterRow), abs(e.c - CenterCol)) <= 3:
           farOk = false; break
       let wounded = tgt.t.hpBucket <= 2 and ourDmg > 0 and
         hitsNeeded <= 3
-      hpOk = (p.hp >= 95 or (wounded and p.hp >= 60)) and farOk
+      let cheapTrade = tgt.t.delta == 0 and p.hp >= 85
+      hpOk = (p.hp >= 95 or cheapTrade or
+              (wounded and p.hp >= 60)) and farOk
     let intentKill = fightable and hpOk and not second and
       not m.recovering and bowClose.len == 0
     # pre-fight herb: do not enter reach below one-hit headroom
@@ -546,7 +556,9 @@ proc decide(m: var Mind, p: Percept): int =
   block hunt:
     if m.recovering or bowClose.len > 0: break hunt
     var wantBare = false
-    if p.heldToolTier == 0 and not swordHeld and p.hp >= 95:
+    if p.heldToolTier == 0 and not swordHeld and p.hp >= 85:
+      # a d0 trade costs <=54 hp (3x18); waiting for 95 idles ~30+
+      # regen ticks after every scuffle and starves the flywheel
       wantBare = true
     elif not (swordHeld and p.combLvl <= p.profLvl and p.hp >= 70):
       break hunt
