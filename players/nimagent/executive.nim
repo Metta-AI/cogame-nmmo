@@ -569,7 +569,7 @@ proc decide(m: var Mind, p: Percept): int =
   if not m.settled:
     if melee.len == 0 and bows.len == 0:
       inc m.quietTicks
-      if m.quietTicks >= 15: m.settled = true
+      if m.quietTicks >= 20: m.settled = true
     else:
       m.quietTicks = 0
       # threats visible but neither engage nor bow-flee fired (range):
