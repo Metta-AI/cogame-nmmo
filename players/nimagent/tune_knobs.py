@@ -33,6 +33,7 @@ PARAMS = {  # name: (incumbent, min, max, step)
     "HerbStock": (3, 1, 5, 1),
     "IdleTicksLimit": (120, 70, 220, 20),
     "QuietSettle": (20, 10, 34, 4),
+    "UpgradeComb": (3, 2, 6, 1),
 }
 
 
@@ -45,8 +46,8 @@ def evaluate(cfg: dict) -> float:
         timeout=600)
     if r.returncode != 0:
         return -1.0
-    r = subprocess.run("./bench_tune 8 1500 1", shell=True, cwd=HERE,
-                       capture_output=True, text=True, timeout=1800)
+    r = subprocess.run("./bench_tune 6 5000 1", shell=True, cwd=HERE,
+                       capture_output=True, text=True, timeout=3600)
     m = re.search(r"nim mean=([0-9.]+)", r.stdout)
     return float(m.group(1)) if m else -1.0
 

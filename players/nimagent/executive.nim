@@ -25,6 +25,7 @@ const
   HerbStock {.intdefine.} = 3
   IdleTicksLimit {.intdefine.} = 120
   QuietSettle {.intdefine.} = 20
+  UpgradeComb {.intdefine.} = 3
 
   BaseAttack = 40
   EnemyBase = 15
@@ -480,7 +481,7 @@ proc decide(m: var Mind, p: Percept): int =
       elif p.maxToolTier == 2: 17
       else: 99
     let wantUpgrade = preyMin < 99 and
-      (swordHeld or bowHeld) and p.combLvl >= 4
+      (swordHeld or bowHeld) and p.combLvl >= UpgradeComb
     var pool: seq[tuple[r, c: int, t: Track]]
     if wantUpgrade:
       for e in near:
@@ -656,7 +657,7 @@ proc decide(m: var Mind, p: Percept): int =
       elif p.maxToolTier == 2: 17
       else: 99
     let huntUpgrade = preyMinH < 99 and
-      (swordHeld or bowHeld) and p.combLvl >= 4
+      (swordHeld or bowHeld) and p.combLvl >= UpgradeComb
     var best = (999, 0, 0)
     for cand in cands:
       # winnable?
