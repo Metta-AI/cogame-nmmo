@@ -13,6 +13,17 @@ flags every tick).
 
 ## Player websocket (`GET /player?slot=N&token=T`)
 
+### Optional query param: `obs=clean` (patch 0003)
+
+Append `&obs=clean` to the connect URL to opt this seat into **truthful
+entity bytes**: window cells with no entity get bytes 4..9 zeroed instead of
+retaining stale values from past occupants (the legacy encoding's residue —
+see PufferAI/PufferLib#629). Omitting the param (every pre-0003 policy) keeps
+the legacy encoding **bit-identical**. The flag is per-seat, applies from the
+next observation after connect, and has no effect on simulation state,
+scoring, or replays — only on what this seat's observation asserts about
+empty cells.
+
 A player container receives its fully-formed connection URL in the
 `COWORLD_PLAYER_WS_URL` environment variable (legacy alias
 `COGAMES_ENGINE_WS_URL`), e.g.

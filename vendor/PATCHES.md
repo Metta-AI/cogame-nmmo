@@ -12,7 +12,9 @@ by `sim/apply_patches.sh` into `build/`:
 **Invariant:** patches must keep in-episode physics byte-identical. The
 fidelity test drives both builds with identical seed + action logs and
 requires byte-identical obs and reward streams. A patch that breaks it is
-rejected.
+rejected. (Patch 0003 is obs-only and strictly opt-in per agent: with no
+agent opted in — the fidelity test's configuration — obs remain
+byte-identical; physics are untouched in every configuration.)
 
 ## 0001-render-guard.patch
 
@@ -82,3 +84,23 @@ bailing out of the local operation only (no target found / item use no-ops).
   step); the shim's `nmmo_step()` zeroes the buffer before `c_step`, so after
   each step it holds exactly that tick's done flags. Episode truncation at
   `max_ticks` is server-side, as the playbook requires.
+
+## 0003-obs-clean-optin.patch
+
+Per-agent opt-in for truthful entity bytes. Upstream's `compute_all_obs`
+writes entity bytes 4..9 only while an entity occupies the cell and never
+clears them (buffer calloc'd once at `allocate_mmo`) — stale "live enemy"
+claims persist indefinitely and translate with the observer's window
+(reported upstream: PufferAI/PufferLib#629). This patch adds
+`MMO.obs_clean[num_agents]` (calloc'd 0 = legacy) and an
+`else if (obs_clean_flag)` that zeroes bytes 4..9 of empty cells for opted-in
+agents' windows only.
+
+- Default path is the exact upstream code path: non-opted agents' obs are
+  **bit-identical**, so existing policies (and the pretrained demo net) are
+  untouched.
+- Request channel: shim export `nmmo_set_obs_clean(pid, on)` (sim/shim.c),
+  surfaced to policies as the `&obs=clean` query param on the `/player`
+  websocket connect (docs/PROTOCOL.md).
+- Simulation state, RNG, scoring, and replays are unaffected — the patch
+  touches observation encoding only.

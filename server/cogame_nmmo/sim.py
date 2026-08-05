@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import sys
+
 import numpy as np
 from wasmtime import (Config, Engine, Func, FuncType, Linker, Module, Store,
                       ValType, WasiConfig)
@@ -108,11 +110,29 @@ class NmmoSim:
 
     # -- lockstep API ------------------------------------------------------
 
+    def set_obs_clean(self, pid: int, on: bool) -> None:
+        """patch-0003 opt-in: truthful entity bytes for one seat.
+
+        Default (never called) leaves every seat on the legacy encoding,
+        bit-identical to pre-0003 sims: per-tile entity bytes go stale when
+        a tile empties and are never cleared (PufferAI/PufferLib#629).
+        Opted-in seats get bytes 4..9 zeroed for empty cells in THEIR window
+        only. Safe on old wasm builds: missing export -> no-op with warning.
+        """
+        try:
+            fn = self._exports["nmmo_set_obs_clean"]
+        except KeyError:
+            print("sim wasm predates patch 0003: nmmo_set_obs_clean missing;"
+                  " obs=clean request ignored", file=sys.stderr)
+            return
+        fn(self._store, pid, 1 if on else 0)
+
     def observations(self) -> np.ndarray:
         """Fresh (num_agents, 1707) uint8 copy of the current observations.
 
-        The underlying sim buffer is persistent and never cleared between
-        ticks (trained-on quirk: per-tile entity bytes go stale when a tile
+        The underlying sim buffer is persistent and, for seats that did not
+        opt into patch-0003 clean obs, never cleared between ticks
+        (trained-on quirk: per-tile entity bytes go stale when a tile
         empties); this method only copies, it must never zero anything.
         """
         raw = self._memory.read(
