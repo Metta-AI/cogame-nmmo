@@ -332,6 +332,19 @@ proc decide(m: var Mind, p: Percept): int =
   var meleeCells: seq[tuple[r, c: int]]
   for e in melee: meleeCells.add (e.r, e.c)
   let occ = m.world.occupancy()
+  # own-experience danger memory: bows that HIT us this life are
+  # leashed (wander leash 3) - their zones are static. Entry
+  # prevention only (wander/hunt/routing), never flee triggering.
+  var dangerBows: seq[tuple[r, c: int]]
+  for a in m.world.dangerAnchors:
+    let r = a.r - m.world.pos.r + CenterRow
+    let c = a.c - m.world.pos.c + CenterCol
+    if r >= -4 and r < WindowRows + 4 and c >= -4 and c < WindowCols + 4:
+      var dup = false
+      for b in bows:
+        if max(abs(b.r - r), abs(b.c - c)) <= 1: dup = true; break
+      if not dup: dangerBows.add (r, c)
+  let vetoBows = bows & dangerBows
 
   # market UI
   m.branch = "ui"
@@ -588,9 +601,9 @@ proc decide(m: var Mind, p: Percept): int =
         if max(abs(other.r - cand.r), abs(other.c - cand.c)) <= 3:
           lonely = false; break
       if not lonely: continue
-      # not in any tracked-bow danger zone
+      # not in any tracked-bow or remembered-shooter danger zone
       var bowBad = false
-      for b in bows:
+      for b in vetoBows:
         if bowDanger(cand.r, cand.c, b.r, b.c): bowBad = true; break
       if bowBad: continue
       # not recently hunted-and-empty (residue ghosts)
@@ -610,7 +623,7 @@ proc decide(m: var Mind, p: Percept): int =
       # ghost - burn it so hunt moves on
       m.huntBlacklist.add ((m.world.toFrame(best[1], best[2]), m.tick))
       break hunt
-    let cm = initCostMap(p, bows, meleeCells, occ)
+    let cm = initCostMap(p, vetoBows, meleeCells, occ)
     let (okH, actH) = cm.safeRoute(best[1], best[2])
     if okH:
       m.branch = "hunt"
@@ -630,7 +643,7 @@ proc decide(m: var Mind, p: Percept): int =
   # harvest (A*-routed)
   let target = harvestTarget(p)
   if target.ok:
-    let cm = initCostMap(p, bows, meleeCells, occ)
+    let cm = initCostMap(p, vetoBows, meleeCells, occ)
     let (ok, act) = cm.safeRoute(target.r, target.c)
     if ok:
       m.branch = "harvest"
@@ -642,7 +655,7 @@ proc decide(m: var Mind, p: Percept): int =
 
   # overwatch / roam
   m.branch = "wander"
-  m.wander(p, bows, meleeCells, occ, roam = m.urgentAny(p))
+  m.wander(p, vetoBows, meleeCells, occ, roam = m.urgentAny(p))
 
 proc act*(m: var Mind, obs: openArray[uint8]): int =
   let p = initPercept(obs)

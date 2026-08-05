@@ -53,6 +53,9 @@ type
     prevHp: int
     originTick*: int
     stillTicks: int               # consecutive ticks with no own move
+    dangerAnchors*: seq[tuple[r, c: int]]  # frame positions of bows
+                                  # that actually HIT us this life -
+                                  # leashed shooters, static all life
 
 proc reset*(w: var WorldModel, tick: int) =
   w.originTick = tick
@@ -63,6 +66,7 @@ proc reset*(w: var WorldModel, tick: int) =
   w.teleported = false
   w.prevHp = -1
   w.stillTicks = 0
+  w.dangerAnchors = @[]
 
 proc initWorldModel*(): WorldModel =
   result.reset(0)
@@ -295,6 +299,8 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
       if t.kind == tkBow and chebW((win.r, win.c)) <= 4 and
           (win.r == CenterRow or win.c == CenterCol):
         bowAligned = true
+        if t.pos notin w.dangerAnchors:
+          w.dangerAnchors.add t.pos
     if not adjMelee and not bowAligned:
       for d in MoveDeltas:
         let r = CenterRow + d.dr
@@ -342,6 +348,8 @@ proc observe*(w: var WorldModel, p: Percept, tick: int) =
             element: p.tile(r, c, TbEntElement),
             lastConfirmed: tick, born: tick, inferred: true,
             ghost: true)
+          if fpos notin w.dangerAnchors:
+            w.dangerAnchors.add fpos
   w.prevHp = p.hp
 
   copyMem(addr w.prevTiles[0], unsafeAddr p.obs[0],
