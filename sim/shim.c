@@ -211,6 +211,15 @@ static int debug_buf[512 * 5];
 __attribute__((export_name("debug_buf_ptr")))
 int* debug_buf_ptr(void) { return debug_buf; }
 
+__attribute__((export_name("debug_market")))
+int debug_market(int item_id) {
+    // read-only market census (forensics): stock<<16 | top price
+    if (item_id < 0 || item_id >= 5 * I_N) return -1;
+    ItemMarket* m = &env.market[item_id];
+    int price = (m->stock > 0) ? m->offers[m->stock - 1].price : 0;
+    return (m->stock << 16) | (price & 0xFFFF);
+}
+
 __attribute__((export_name("debug_nearby")))
 int debug_nearby(int pid, int radius) {
     if (pid < 0 || pid >= env.num_agents)

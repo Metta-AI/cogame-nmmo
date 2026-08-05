@@ -78,7 +78,11 @@ proc main() =
     var branchTicks: array[4, CountTable[string]]
     # chain funnel: per life, which stage was reached
     var lifeComb, lifeTool, lifeSword, lifeMin: array[4, int]
+    var lifeDef: array[4, int]
+    var lifeProf: array[4, int]
     var funnel: array[5, int]   # lives, kill, tool, sword, min>=4
+    var armedCombSum, armedProfSum, armedLives: int
+    var armor24, armor48: int
 
     for t in 0 ..< ticks:
       # baseline seats
@@ -101,8 +105,15 @@ proc main() =
           if lifeTool[k] >= 1: inc funnel[2]
           if lifeSword[k] >= 1: inc funnel[3]
           if lifeMin[k] >= 4: inc funnel[4]
+          if lifeDef[k] >= 24: inc armor24
+          if lifeDef[k] >= 48: inc armor48
+          if lifeSword[k] >= 1:
+            armedCombSum += lifeComb[k]
+            armedProfSum += lifeProf[k]
+            inc armedLives
           lifeComb[k] = 0; lifeTool[k] = 0
-          lifeSword[k] = 0; lifeMin[k] = 0
+          lifeSword[k] = 0; lifeMin[k] = 0; lifeProf[k] = 0
+          lifeDef[k] = 0
           minds[k].tick = t
           minds[k].reset()
         copyMem(addr buf[0], addr obs[pid * ObsSize], ObsSize)
@@ -112,6 +123,8 @@ proc main() =
         lifeSword[k] = max(lifeSword[k], max(p.bestSwordTier,
                                              p.bestBowTier))
         lifeMin[k] = max(lifeMin[k], min(p.combLvl, p.profLvl))
+        lifeProf[k] = max(lifeProf[k], p.profLvl)
+        lifeDef[k] = max(lifeDef[k], p.eqDef)
         let a = minds[k].act(buf)
         act[pid] = cfloat(a)
         if probe:
@@ -216,7 +229,9 @@ proc main() =
         echo &"  seat{k} d={deaths[k]} min={combs[k]} branches: ",
           branchTicks[k]
     echo &"  funnel: lives={funnel[0]} kill={funnel[1]} " &
-      &"tool={funnel[2]} sword={funnel[3]} min4={funnel[4]}"
+      &"tool={funnel[2]} sword={funnel[3]} min4={funnel[4]} " &
+      &"armed(comb,prof)=({armedCombSum},{armedProfSum})/{armedLives} " &
+      &"armor24={armor24} armor48={armor48}"
 
   var nMean, bMean: float
   for s in allNim: nMean += s / float(allNim.len)

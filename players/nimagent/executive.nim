@@ -158,6 +158,7 @@ proc junkSlot(p: Percept): int =
     let t = itemType(item)
     let tier = itemTier(item)
     if t == IHerb: continue
+    if t >= IGemFirst and t <= IGemLast: continue  # element immunity kit
     if t == ITool and tier >= bestTool: continue
     if t == ISword and tier >= bestSword: continue
     if isArmorType(t):
@@ -181,6 +182,29 @@ proc urgentComb(m: Mind, p: Percept): bool =
 
 proc lastMoveBlocked(m: Mind, p: Percept): bool =
   (isMove(m.lastAction) or isRun(m.lastAction)) and p.anim == 0
+
+proc counterGem*(bowElement: int): int =
+  ## Gem element G that ZEROES arrows from bowElement
+  ## (EFFECT_MATRIX[bowE][G] == 0, nmmo3.h:862): 1->2, 2->3, 3->4,
+  ## 4->1. Gems cost nothing vs melee (attacker element 0 row is all
+  ## 1s) - the "never gems" doctrine was wrong.
+  case bowElement
+  of 1: 2
+  of 2: 3
+  of 3: 4
+  of 4: 1
+  else: 0
+
+proc gemSlotFor*(p: Percept, element: int): int =
+  ## Inventory slot holding a gem of the given element, or -1.
+  for i in 0 ..< NumKeySlots:
+    let item = p.inventory(i)
+    if item != 0 and not p.isEquipped(i):
+      let t = itemType(item)
+      if t >= IGemFirst and t <= IGemLast and
+          t - IGemFirst + 1 == element:
+        return i
+  -1
 
 proc bowDanger*(r, c, br, bc: int): bool =
   ## Cell (r,c) is in bow (br,bc)'s danger zone: aligned within 5 (an

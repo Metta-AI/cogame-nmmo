@@ -32,6 +32,7 @@ proc nmmoScore*(pid: cint): cint {.importc: "nmmo_score".}
 proc stateDigest*(): cuint {.importc: "state_digest".}
 proc debugBufPtr*(): ptr UncheckedArray[cint] {.importc: "debug_buf_ptr".}
 proc debugNearby*(pid, radius: cint): cint {.importc: "debug_nearby".}
+proc debugMarket*(itemId: cint): cint {.importc: "debug_market".}
 
 type
   GtEnemy* = object

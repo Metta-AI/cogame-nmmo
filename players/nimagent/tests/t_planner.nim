@@ -2,7 +2,7 @@
 # (the python suite passed 13/13 on 2026-08-03; the 1v1 scenarios run
 # through planMelee with n=1, exactly gate (d) there).
 
-import ../percept, ../planner
+import ../percept, ../planner, ../executive
 
 type
   MiniEnemy = object
@@ -262,7 +262,9 @@ block bowCrossfireEscape:
     "crossfire: " & $m.hitsTaken & " hits (" & $m.dmgTaken & ")"
   echo "bow-crossfire-escape: OK (", m.hitsTaken, " hits)"
 
-# killTheBow: NOT gated - a bow kill needs ~14 parity-perfect plies
-# (deep-horizon); future scripted maneuver, not searchable at depth 5.
+# kill-the-bow: PARITY-REFUTED in the open (tie->row realignment
+# locks our turns to aligned-adjacent states; each sword hit costs one
+# arrow ~80 - unprofitable at any reachable gear). Armor is the only
+# bow answer; terrain-assisted kills are niche future work.
 
 echo "L2 GATE OK"
