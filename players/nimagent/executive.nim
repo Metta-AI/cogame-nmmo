@@ -13,18 +13,18 @@ import percept, world, planner, astar
 
 const
   StagWindow = 500
-  HerbHp = 45
-  HerbHpCombat = 65
-  RecoverFloor = 60
-  RecoverUntil = 90
+  HerbHp {.intdefine.} = 45
+  HerbHpCombat {.intdefine.} = 65
+  RecoverFloor {.intdefine.} = 60
+  RecoverUntil {.intdefine.} = 90
   BowAvoid = 4    # a bow only ACTS on players inside its +-4 box
                   # (enemy_ai scan, nmmo3.h:1592); range >= 5 is
                   # harmless leashed wander - fleeing it was measured
                   # pure cost (pushed agents into melee)
-  EngageR = 6   # react OUTSIDE the enemy's 4-box: planner control
-                # begins before contact, so declining a fight is a
-                # 1-2 step exit instead of a chased escape
-  HerbStock = 2
+  EngageR {.intdefine.} = 6  # react OUTSIDE the enemy's 4-box
+  HerbStock {.intdefine.} = 2
+  IdleTicksLimit {.intdefine.} = 120
+  QuietSettle {.intdefine.} = 20
 
   BaseAttack = 40
   EnemyBase = 15
@@ -253,7 +253,7 @@ proc wander(m: var Mind, p: Percept,
     # 6.9 in the same worlds (bow 3 vs 35) purely by near-zero
     # roaming - every fresh aggro/bow box entered is a dice roll.
     # Overwatch long, wander rarely and briefly.
-    if m.idleTicks < 120: return AtnNoop
+    if m.idleTicks < IdleTicksLimit: return AtnNoop
   let blocked = m.lastMoveBlocked(p)
   var options: seq[int]
   for ai in 0 .. 3:
@@ -593,7 +593,7 @@ proc decide(m: var Mind, p: Percept): int =
   if not m.settled:
     if melee.len == 0 and bows.len == 0:
       inc m.quietTicks
-      if m.quietTicks >= 20: m.settled = true
+      if m.quietTicks >= QuietSettle: m.settled = true
     else:
       m.quietTicks = 0
       # threats visible but neither engage nor bow-flee fired (range):

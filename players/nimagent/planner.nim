@@ -11,13 +11,19 @@
 import percept
 
 const
-  Depth* = 5
-  KillBonus = 10.0
-  HitCredit = 0.6
-  OccPenalty = 2.5
-  HazardPenalty = 14.0
-  WKill = 5.0
-  WAvoid = 9.0
+  Depth* {.intdefine.} = 5
+  KillBonusI {.intdefine.} = 100   # x0.1
+  HitCreditI {.intdefine.} = 6     # x0.1
+  OccPenaltyI {.intdefine.} = 25   # x0.1
+  HazardPenaltyI {.intdefine.} = 140  # x0.1
+  WKillI {.intdefine.} = 50        # x0.1
+  WAvoidI {.intdefine.} = 90       # x0.1
+  KillBonus = float(KillBonusI) * 0.1
+  HitCredit = float(HitCreditI) * 0.1
+  OccPenalty = float(OccPenaltyI) * 0.1
+  HazardPenalty = float(HazardPenaltyI) * 0.1
+  WKill = float(WKillI) * 0.1
+  WAvoid = float(WAvoidI) * 0.1
   MaxEnemies* = 8
 
 type
