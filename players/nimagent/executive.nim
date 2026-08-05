@@ -294,8 +294,8 @@ proc equipAction(p: Percept, swordHeld: bool): int =
       let s = slotOf(p, cur, equipped = true)
       if s >= 0: return AtnOne + s
   let want =
-    if p.bestBowTier > 0 and p.combLvl <= p.profLvl: IBow
-    elif p.bestSwordTier > 0 and p.combLvl <= p.profLvl: ISword
+    if p.bestSwordTier > 0 and p.combLvl <= p.profLvl: ISword
+    elif p.bestBowTier > 0 and p.combLvl <= p.profLvl: IBow
     else: ITool
   let best = bestUnequipped(p, want)
   let held = p.equipment(SlotHeld)
@@ -467,10 +467,22 @@ proc decide(m: var Mind, p: Percept): int =
   if near.len > 0:
     proc dmgVs(t: Track): float = dmgVsDelta(t.delta)
     proc theirDmgVs(t: Track): float = theirDmgVsDelta(t.delta)
-    # target: the SOFTEST worthwhile enemy nearby, else nearest
+    # target selection climbs the XP/GEAR LADDER, not just softness:
+    # tier-2 tools ONLY drop from L9-16 kills (drop_loot/level_tier),
+    # and prof>8, 16-def armor pieces and the +48 sword all sit behind
+    # a t2 tool - the measured min~8 plateau IS the t1 ceiling. Once
+    # t1-armed at comb>=4, prefer fightable UPGRADE PREY (est level
+    # >= 9); otherwise softest-first as before.
+    let wantUpgrade = p.maxToolTier == 1 and
+      (swordHeld or bowHeld) and p.combLvl >= 4
     var pool: seq[tuple[r, c: int, t: Track]]
-    for e in near:
-      if dmgVs(e.t) >= 12: pool.add e
+    if wantUpgrade:
+      for e in near:
+        let (_, hiU) = deltaBounds(p.combLvl, e.t.delta)
+        if dmgVs(e.t) >= 12 and hiU >= 9: pool.add e
+    if pool.len == 0:
+      for e in near:
+        if dmgVs(e.t) >= 12: pool.add e
     if pool.len == 0: pool = near
     var tgt = pool[0]
     var tgtKey = (999, 0.0)
@@ -633,6 +645,8 @@ proc decide(m: var Mind, p: Percept): int =
           nearTrack = true; break
       if not nearTrack:
         cands.add (e.r, e.c, e.delta, false)
+    let huntUpgrade = p.maxToolTier == 1 and
+      (swordHeld or bowHeld) and p.combLvl >= 4
     var best = (999, 0, 0)
     for cand in cands:
       # winnable?
@@ -640,6 +654,9 @@ proc decide(m: var Mind, p: Percept): int =
         if cand.delta > 0: continue          # bare-hand: d0 only
       else:
         if dmgVsDelta(cand.delta) < 12: continue
+        if huntUpgrade:
+          let (_, hiU) = deltaBounds(p.combLvl, cand.delta)
+          if hiU < 9: continue               # hunt t2-droppers only
       # isolated: no OTHER candidate/track within cheb 3 of it
       var lonely = true
       for other in cands:
