@@ -9,6 +9,7 @@ type
     r, c: int
     dmg: float
     hp: int
+    ranged: bool
 
   MiniMelee = object
     pr, pc: int
@@ -70,16 +71,26 @@ proc step(m: var MiniMelee, action: int, target: int) =
     let dr = m.pr - r
     let dc = m.pc - c
     if max(abs(dr), abs(dc)) > 4: continue
-    if abs(dr) + abs(dc) == 1:
+    var nr = r
+    var nc = c
+    if m.enemies[i].ranged:
+      if dr == 0 or dc == 0:
+        m.dmgTaken += m.enemies[i].dmg
+        inc m.hitsTaken
+        continue
+      if abs(dr) > abs(dc):
+        nc = c + (if dc > 0: 1 else: -1)
+      else:
+        nr = r + (if dr > 0: 1 else: -1)
+    elif abs(dr) + abs(dc) == 1:
       m.dmgTaken += m.enemies[i].dmg
       inc m.hitsTaken
       continue
-    var nr = r
-    var nc = c
-    if abs(dr) > abs(dc):
-      nr = r + (if dr > 0: 1 else: -1)
     else:
-      nc = c + (if dc > 0: 1 else: -1)
+      if abs(dr) > abs(dc):
+        nr = r + (if dr > 0: 1 else: -1)
+      else:
+        nc = c + (if dc > 0: 1 else: -1)
     if m.passable(nr, nc) and (nr, nc) != (m.pr, m.pc) and
         (nr, nc) notin o:
       let idx = o.find((r, c))
@@ -98,7 +109,8 @@ proc drive(m: var MiniMelee, target: int, intentKill: bool,
     for i, e in m.enemies:
       if e.hp <= 0: continue
       if i == target: tidx = enemies.len
-      enemies.add PlanEnemy(r: e.r, c: e.c, dmg: e.dmg, hp: e.hp)
+      enemies.add PlanEnemy(r: e.r, c: e.c, dmg: e.dmg, hp: e.hp,
+                            ranged: e.ranged)
       inc liveCount
     if liveCount == 0: return
     let mm = m   # capture snapshot for the closure
@@ -238,5 +250,19 @@ block bowKiteBystander:
   doAssert m.enemies[0].hp <= 0, "target survived"
   doAssert m.hitsTaken <= 1, "bystander hits " & $m.hitsTaken
   echo "bow-kite-bystander: OK"
+
+block bowCrossfireEscape:
+  # melee chaser + off-axis bow: escape with <=1 arrow taken
+  var m = initMini(0, 0,
+    @[MiniEnemy(r: 2, c: 1, dmg: 60.0, hp: 99),
+      MiniEnemy(r: -2, c: 3, dmg: 80.0, hp: 99, ranged: true)],
+    0.0, sword = false)
+  m.drive(-1, intentKill = false, ticks = 50)
+  doAssert m.hitsTaken <= 1,
+    "crossfire: " & $m.hitsTaken & " hits (" & $m.dmgTaken & ")"
+  echo "bow-crossfire-escape: OK (", m.hitsTaken, " hits)"
+
+# killTheBow: NOT gated - a bow kill needs ~14 parity-perfect plies
+# (deep-horizon); future scripted maneuver, not searchable at depth 5.
 
 echo "L2 GATE OK"

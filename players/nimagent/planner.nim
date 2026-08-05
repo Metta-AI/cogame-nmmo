@@ -25,6 +25,9 @@ type
     r*, c*: int
     dmg*: float          # their damage to us per hit
     hp*: int
+    ranged*: bool        # bow enemy: shoots when aligned <=4, else
+                         # steps along the SHORTEST axis toward
+                         # alignment; NO melee attack (enemy_ai)
 
   Cell = tuple[r, c: int]
 
@@ -68,15 +71,26 @@ proc stepEnemies(ctx: PlanCtx, pr, pc: int, epos: var seq[Cell],
     let dc = pc - c
     if max(abs(dr), abs(dc)) > 4:
       continue                       # outside its aggro box: idle
-    if abs(dr) + abs(dc) == 1:
-      result += ctx.enemies[i].dmg
-      continue
     var nr = r
     var nc = c
-    if abs(dr) > abs(dc):
-      nr = r + (if dr > 0: 1 else: -1)
+    if ctx.enemies[i].ranged:
+      # bow: shoot when aligned (incl. adjacent); else step along the
+      # SHORTEST axis toward alignment. No melee attack.
+      if dr == 0 or dc == 0:
+        result += ctx.enemies[i].dmg
+        continue
+      if abs(dr) > abs(dc):
+        nc = c + (if dc > 0: 1 else: -1)
+      else:
+        nr = r + (if dr > 0: 1 else: -1)
     else:
-      nc = c + (if dc > 0: 1 else: -1)
+      if abs(dr) + abs(dc) == 1:
+        result += ctx.enemies[i].dmg
+        continue
+      if abs(dr) > abs(dc):
+        nr = r + (if dr > 0: 1 else: -1)
+      else:
+        nc = c + (if dc > 0: 1 else: -1)
     if ctx.passable(nr, nc) and (nr, nc) != (pr, pc) and
         (nr, nc) notin occ:
       let idx = occ.find((r, c))
