@@ -135,6 +135,10 @@ class WsSeat:
         self.name = name
         self.ws: web.WebSocketResponse | None = None
         self.ever_connected = False
+        # patch-0003 opt-in: policy requested truthful entity bytes via
+        # ``&obs=clean`` on the /player connect URL. Default False = legacy
+        # residue encoding, bit-identical to what every pre-0003 policy saw.
+        self.obs_clean = False
         self._waiter: tuple[int, asyncio.Future] | None = None
         # Messages answering a different tick than the pending one; read
         # by the engine into results noop_causes["wrong_tick"].
@@ -218,6 +222,7 @@ class GameServer:
         self.save_replay_uri = save_replay_uri
         self.player_failure_uri = player_failure_uri
         self.sim_factory = sim_factory
+        self._sim = None  # live sim once the episode starts (patch-0003 late connects)
         self.wasm_path = wasm_path
         self.seats = [
             WsSeat(slot, player.name)
@@ -369,8 +374,15 @@ class GameServer:
             return ws
         seat.ws = ws
         seat.ever_connected = True
+        if request.query.get("obs", "") == "clean":
+            # patch-0003: this seat asked for truthful entity bytes.
+            seat.obs_clean = True
+            if self._sim is not None:
+                # late/re-connect after episode start: apply immediately
+                self._sim.set_obs_clean(slot, True)
         print(f"seat {slot} ({seat.name}) connected at tick "
-              f"{self._last_tick}", file=sys.stderr)
+              f"{self._last_tick}"
+              + (" [obs=clean]" if seat.obs_clean else ""), file=sys.stderr)
         if all(s.connected for s in self.seats):
             self._all_connected.set()
 
@@ -445,6 +457,13 @@ class GameServer:
 
         try:
             sim = self.sim_factory(seed=cfg.seed, num_agents=cfg.num_agents)
+            self._sim = sim
+            # patch-0003: apply per-seat clean-obs requests gathered at
+            # connect time. Seats that never asked stay on the legacy
+            # (bit-identical) encoding.
+            for s_ in self.seats:
+                if s_.obs_clean:
+                    sim.set_obs_clean(s_.slot, True)
             engine = LockstepEngine(sim, cfg, self.seats, on_tick=on_tick,
                                     on_seat_dead=self._on_seat_dead)
             result = await engine.run()

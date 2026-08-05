@@ -1,0 +1,59 @@
+--- a/nmmo3.h
++++ b/nmmo3.h
+@@ -693,6 +693,14 @@
+     unsigned char* items;
+     unsigned char* counts;
+     unsigned char* observations;
++    // cogame-nmmo patch 0003: per-agent opt-in for truthful entity bytes.
++    // 0 (default) = legacy encoding, bit-identical to upstream: entity
++    // bytes 4..9 of a window cell are written only while an entity is in
++    // the cell and are never cleared, so stale bytes persist indefinitely
++    // (see PufferAI/PufferLib#629). 1 = that agent's window gets bytes
++    // 4..9 zeroed for empty cells (snapshot semantics). Requested per
++    // seat by the policy at connect (server: /player?...&obs=clean).
++    unsigned char* obs_clean;
+     float* rewards;
+     float* terminals;
+     Reward* reward_struct;
+@@ -795,6 +803,7 @@
+ void allocate_mmo(MMO* env) {
+     // TODO: Not hardcode
+     env->observations = calloc(env->num_agents*(11*15*10+47+10), sizeof(unsigned char));
++    env->obs_clean = calloc(env->num_agents, sizeof(unsigned char));  // patch 0003, default 0 = legacy
+     env->rewards = calloc(env->num_agents, sizeof(float));
+     env->terminals = calloc(env->num_agents, sizeof(float));
+     env->actions = calloc(env->num_agents, sizeof(float));
+@@ -815,6 +824,7 @@
+ 
+ void free_allocated_mmo(MMO* env) {
+     free(env->observations);
++    free(env->obs_clean);  // patch 0003
+     free(env->rewards);
+     free(env->terminals);
+     free(env->returns);
+@@ -926,6 +936,9 @@
+ void compute_all_obs(MMO* env) {
+     for (int pid = 0; pid < env->num_agents; pid++) {
+         Entity* player = get_entity(env, pid);
++        // patch 0003: capture this agent's flag BEFORE the inner loop's
++        // `int pid = env->pids[map_adr]` shadows the agent index.
++        int obs_clean_flag = env->obs_clean ? env->obs_clean[pid] : 0;
+         int r = player->r;
+         int c = player->c;
+ 
+@@ -971,6 +984,15 @@
+                     env->observations[obs_adr+7] = seen->hp / 20; // Bucketed for discrete
+                     env->observations[obs_adr+8] = seen->anim;
+                     env->observations[obs_adr+9] = seen->dir;
++                } else if (obs_clean_flag) {
++                    // patch 0003: opted-in agents get truthful entity
++                    // bytes — empty cell means zeroed bytes, no residue.
++                    env->observations[obs_adr+4] = 0;
++                    env->observations[obs_adr+5] = 0;
++                    env->observations[obs_adr+6] = 0;
++                    env->observations[obs_adr+7] = 0;
++                    env->observations[obs_adr+8] = 0;
++                    env->observations[obs_adr+9] = 0;
+                 }
+                 obs_adr += 10;
+             }

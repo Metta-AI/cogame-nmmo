@@ -202,3 +202,62 @@ __attribute__((export_name("state_digest")))
 unsigned int state_digest(void) {
     return nmmo_state_digest(&env);
 }
+
+// ---- local-analysis debug reads (read-only; no sim state is touched) ----
+// Rows of 5 ints per enemy within Chebyshev `radius` of player `pid`:
+// (dr, dc, comb_lvl, ranged, hp). Returns the row count.
+static int debug_buf[512 * 5];
+
+__attribute__((export_name("debug_buf_ptr")))
+int* debug_buf_ptr(void) { return debug_buf; }
+
+__attribute__((export_name("debug_market")))
+int debug_market(int item_id) {
+    // read-only market census (forensics): stock<<16 | top price
+    if (item_id < 0 || item_id >= 5 * I_N) return -1;
+    ItemMarket* m = &env.market[item_id];
+    int price = (m->stock > 0) ? m->offers[m->stock - 1].price : 0;
+    return (m->stock << 16) | (price & 0xFFFF);
+}
+
+__attribute__((export_name("debug_nearby")))
+int debug_nearby(int pid, int radius) {
+    if (pid < 0 || pid >= env.num_agents)
+        return 0;
+    const Entity* player = &env.players[pid];
+    int n = 0;
+    for (int i = 0; i < env.num_enemies && n < 512; i++) {
+        const Entity* e = &env.enemies[i];
+        if (e->hp <= 0)
+            continue;
+        int dr = e->r - player->r;
+        int dc = e->c - player->c;
+        int adr = dr < 0 ? -dr : dr;
+        int adc = dc < 0 ? -dc : dc;
+        int cheb = adr > adc ? adr : adc;
+        if (cheb > radius)
+            continue;
+        debug_buf[n * 5 + 0] = dr;
+        debug_buf[n * 5 + 1] = dc;
+        debug_buf[n * 5 + 2] = e->comb_lvl;
+        debug_buf[n * 5 + 3] = e->ranged;
+        debug_buf[n * 5 + 4] = e->hp;
+        n++;
+    }
+    return n;
+}
+
+// patch-0003 companion: per-seat opt-in for truthful entity bytes (see
+// sim/patches/0003-obs-clean-optin.patch and PufferAI/PufferLib#629).
+// Call any time after nmmo_init; takes effect from the next obs pass.
+// Never calling it leaves every agent on the legacy (bit-identical) path.
+__attribute__((export_name("nmmo_set_obs_clean")))
+void nmmo_set_obs_clean(int pid, int on) {
+#ifndef PRISTINE
+    if (pid < 0 || pid >= env.num_agents || !env.obs_clean)
+        return;
+    env.obs_clean[pid] = (unsigned char)(on != 0);
+#else
+    (void)pid; (void)on;  // pristine tree (0001 only) has no obs_clean
+#endif
+}
