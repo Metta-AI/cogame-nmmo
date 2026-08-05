@@ -109,7 +109,8 @@ proc main() =
         let p = initPercept(buf)
         lifeComb[k] = max(lifeComb[k], p.combLvl)
         lifeTool[k] = max(lifeTool[k], p.maxToolTier)
-        lifeSword[k] = max(lifeSword[k], p.bestSwordTier)
+        lifeSword[k] = max(lifeSword[k], max(p.bestSwordTier,
+                                             p.bestBowTier))
         lifeMin[k] = max(lifeMin[k], min(p.combLvl, p.profLvl))
         let a = minds[k].act(buf)
         act[pid] = cfloat(a)

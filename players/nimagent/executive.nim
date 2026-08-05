@@ -467,7 +467,9 @@ proc decide(m: var Mind, p: Percept): int =
     let hitsNeeded =
       if ourDmg > 0: (eHp + int(ourDmg) - 1) div int(ourDmg) else: 99
     let fightable = ourDmg >= 12 and hitsNeeded <= 8 and wantComb
-    var hpOk = p.hp >= (if theirDmg * 3 < float(p.hp): 55 else: 85)
+    # a kited bow fight costs no contact: hp barely matters
+    var hpOk = p.hp >= (if bowHeld: 40
+                        elif theirDmg * 3 < float(p.hp): 55 else: 85)
     if p.heldToolTier == 0 and not swordHeld:
       # bootstrap trades are bare-handed hp-for-hp: only decisive,
       # isolated fights. Full-bar for healthy targets; a WOUNDED weak
@@ -586,7 +588,8 @@ proc decide(m: var Mind, p: Percept): int =
       # a d0 trade costs <=54 hp (3x18); waiting for 95 idles ~30+
       # regen ticks after every scuffle and starves the flywheel
       wantBare = true
-    elif not (swordHeld and p.combLvl <= p.profLvl and p.hp >= 70):
+    elif not ((swordHeld or bowHeld) and p.combLvl <= p.profLvl and
+              p.hp >= 70):
       break hunt
     # candidate set: tracked melee (exact) + melee-signature residue
     var cands: seq[tuple[r, c, delta: int, tracked: bool]]
