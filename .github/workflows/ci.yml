@@ -156,7 +156,7 @@ jobs:
         env:
           SOFTMAX_TOKEN: ${{ secrets.SOFTMAX_TOKEN }}
         # Token stays in the environment, never on a rendered argv.
-        run: uvx --from "coworld[auth]==0.1.34" softmax set-token "$SOFTMAX_TOKEN"
+        run: uvx --from "coworld[auth]==0.1.43" softmax set-token "$SOFTMAX_TOKEN"
       - name: Determine version
         if: env.HAVE_SOFTMAX_TOKEN == 'true'
         id: version
@@ -187,13 +187,13 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          uvx --from "coworld[auth]==0.1.34" coworld build \
+          uvx --from "coworld[auth]==0.1.43" coworld build \
             --version "$VERSION" \
             --project . \
             --compose compose.yaml \
             --template coworld_manifest_template.json \
             --output dist/coworld_manifest.json
-          uvx --from "coworld[auth]==0.1.34" coworld upload-coworld \
+          uvx --from "coworld[auth]==0.1.43" coworld upload-coworld \
             dist/coworld_manifest.json \
             --timeout-seconds 900 \
             --wait-hosted-smoke \
@@ -204,7 +204,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          uvx --from "coworld[auth]==0.1.34" coworld list --json --limit 500 > /tmp/coworlds-after.json
+          uvx --from "coworld[auth]==0.1.43" coworld list --json --limit 500 > /tmp/coworlds-after.json
           python3 - "$VERSION" <<'EOF'
           import json, sys
           expected = sys.argv[1]
