@@ -89,6 +89,12 @@ upstream.
 | random | `python -m players.random_player` | uniform-random in-range actions |
 | baseline | `python -m players.baseline_player` | upstream pretrained MMONet weights (`nmmo3_weights.bin`) through the vendored network forward pass compiled to wasm — the bundled certification player (needs `build/nmmo3_brain.wasm`) |
 | scripted | `python -m players.scripted_player` | hand-coded survival FSM over the decoded egocentric window (pure Python + aiohttp) |
+| Jev | `python -m players.jev_player` | TypeSafe Jev judges all 26 legal actions from the decoded self-state and visible items |
+
+The Jev player uses the same `COWORLD_PLAYER_WS_URL` protocol as the other players. Set
+`TYPESAFE_API_KEY` in the player container; `TYPESAFE_BASE_URL` and `TYPESAFE_DEFAULT_MODEL` are optional.
+Each tick is one typed System One choice, and the player emits `jev_judgment` telemetry with the selected action,
+probabilities, confidence, model, and token usage.
 
 ## Repo layout
 
