@@ -25,7 +25,7 @@ Registry API facts this code is built on (verified 2026-07-31):
   - `limit` hard-caps at 500 (501 -> HTTP 422); the registry already holds
     more than 500 rows, so a single page silently under-reads.
   - `?name=` is IGNORED by the server; filter client-side.
-  - `?offset=` works; page until a short page.
+  - Page with the `X-Next-Cursor` response header; `?offset=` is rejected.
 """
 
 import json
@@ -34,6 +34,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 BASE = os.environ.get("SOFTMAX_API_BASE", "https://softmax.com/api/observatory")
@@ -51,7 +52,7 @@ def _fetch_json(req, retries=1, backoff_seconds=5):
     for attempt in range(retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
-                return json.load(resp)
+                return json.load(resp), resp.headers.get("X-Next-Cursor")
         except urllib.error.HTTPError as exc:
             if exc.code < 500 or attempt >= retries:
                 raise
@@ -67,8 +68,12 @@ def _fetch_json(req, retries=1, backoff_seconds=5):
 
 def fetch_all_rows(token):
     rows = []
-    for page in range(MAX_PAGES):
-        url = f"{BASE}/v2/coworlds?limit={PAGE_SIZE}&offset={page * PAGE_SIZE}"
+    cursor = None
+    for _ in range(MAX_PAGES):
+        params = {"limit": str(PAGE_SIZE)}
+        if cursor is not None:
+            params["cursor"] = cursor
+        url = f"{BASE}/v2/coworlds?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(
             url,
             headers={
@@ -78,11 +83,11 @@ def fetch_all_rows(token):
                 "User-Agent": "cogame-nmmo-ci/next_coworld_version",
             },
         )
-        batch = _fetch_json(req)
+        batch, cursor = _fetch_json(req)
         if not isinstance(batch, list):
             raise SystemExit(f"unexpected response shape from {url}: {type(batch)}")
         rows.extend(batch)
-        if len(batch) < PAGE_SIZE:
+        if cursor is None:
             return rows
     raise SystemExit(f"registry did not terminate within {MAX_PAGES} pages; refusing to guess")
 
