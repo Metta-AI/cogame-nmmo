@@ -6,11 +6,17 @@ The upload workflows run this before every version computation.
 """
 
 import sys
+import json
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from next_coworld_version import compute_next  # noqa: E402
+import next_coworld_version as picker  # noqa: E402
+
+compute_next = picker.compute_next
 
 
 def row(name, version, canonical=False, rid="cow_test"):
@@ -68,5 +74,29 @@ expect_exit(
     lambda: compute_next([row("ctf", "0.7.x"), row("ctf", "0.7.1", canonical=True)], "ctf"),
     "non-semver",
 )
+
+
+class Response(BytesIO):
+    def __init__(self, rows, cursor=None):
+        super().__init__(json.dumps(rows).encode())
+        self.headers = {"X-Next-Cursor": cursor} if cursor else {}
+
+
+requests = []
+
+
+def fake_urlopen(req, timeout):
+    assert timeout == 60
+    requests.append(parse_qs(urlsplit(req.full_url).query))
+    if len(requests) == 1:
+        return Response([row("nmmo", "0.1.5"), row("other", "1.0.0")], cursor="next/page")
+    return Response([row("nmmo", "0.1.4", canonical=True)])
+
+
+with patch.object(picker, "PAGE_SIZE", 2), patch.object(picker.urllib.request, "urlopen", side_effect=fake_urlopen):
+    rows = picker.fetch_all_rows("test-token")
+assert len(rows) == 3
+assert requests == [{"limit": ["2"]}, {"limit": ["2"], "cursor": ["next/page"]}]
+assert compute_next(rows, "nmmo") == "0.1.6"
 
 print("test_next_coworld_version: all assertions passed")
