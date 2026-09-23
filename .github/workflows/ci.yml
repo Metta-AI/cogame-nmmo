@@ -197,7 +197,9 @@ jobs:
             dist/coworld_manifest.json \
             --timeout-seconds 900 \
             --wait-hosted-smoke \
-            --hosted-smoke-timeout-seconds 1800
+            --hosted-smoke-timeout-seconds 1800 \
+            --wait-certification \
+            --certification-timeout-seconds 1800
       - name: Verify upload
         if: env.HAVE_SOFTMAX_TOKEN == 'true'
         env:
