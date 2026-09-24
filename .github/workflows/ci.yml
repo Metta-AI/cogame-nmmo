@@ -74,6 +74,8 @@ jobs:
         env:
           COGAME_REQUIRE_WASM_BUILD: "1"
         run: uv run pytest -v
+      - name: Export post-training episodes
+        run: uv run python tools/test_posttrain.py
 
   # Packaging smoke: the production image builds and a containerized
   # episode completes with results + replay. Runs the same raw-Docker

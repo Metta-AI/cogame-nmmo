@@ -24,6 +24,8 @@ patch, never the test.
 
 ## Quickstart
 
+Post-training data for the certified variant: [TRAINING.md](TRAINING.md).
+
 ```sh
 uv sync
 bash sim/build_sim.sh      # sim wasm (requires emcc; brew install emscripten)
