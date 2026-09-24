@@ -49,3 +49,11 @@ command, absolute manifest path, and `default` variant to
 `max_decisions=40000`, and a timestep limit for the certified 5,000-tick
 game. A fourth bridge argument sets a shorter tick cap for curriculum runs;
 set `max_decisions` to eight times that cap.
+
+A complete certified-length bridge game finished all 40,000 seat decisions
+with nonzero native scores for every seat. A 32-tick curriculum completed 512
+Metta RL timesteps. A native PufferLib run on one RTX 4090 completed 4,096
+timesteps, saved and reloaded its checkpoint, and evaluated four games on
+each held-out seed. The learner's native score was 1.000 on both seeds; its
+pairwise performance was 0.393 and 0.446. These short curriculum runs verify
+the training and reload paths, not policy quality at 5,000 ticks.
