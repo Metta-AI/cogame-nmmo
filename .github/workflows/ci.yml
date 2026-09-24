@@ -76,6 +76,8 @@ jobs:
         run: uv run pytest -v
       - name: Export post-training episodes
         run: uv run python tools/test_posttrain.py
+      - name: Exercise numeric training bridge
+        run: uv run python tools/test_train_bridge.py
 
   # Packaging smoke: the production image builds and a containerized
   # episode completes with results + replay. Runs the same raw-Docker

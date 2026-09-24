@@ -29,3 +29,23 @@ uv run --package metta-posttrain --extra train python -m metta_posttrain.train \
   --dataset /tmp/nmmo-data --output /tmp/nmmo-adapter \
   --model Qwen/Qwen3-0.6B --max-steps 100 --max-length 4096
 ```
+
+## Numeric reinforcement learning
+
+`tools/train_bridge.py` exposes the original 1,707 observation bytes as
+numeric values and all 26 original actions. The bridge keeps every opponent
+on a scripted policy and advances the production Wasm simulator only after
+all eight seats choose. `semantic_view` carries the exact base64 observation
+and per-life reset flag; `messages` carry the decoded text view above.
+
+```sh
+uv run python tools/test_train_bridge.py
+```
+
+From a Metta checkout with the Coworld training stack, pass the bridge
+command, absolute manifest path, and `default` variant to
+`recipes.external.coworld.train` for native PufferLib or
+`recipes.external.coworld_metta_rl.train` for Metta RL. Use `players=8`,
+`max_decisions=40000`, and a timestep limit for the certified 5,000-tick
+game. A fourth bridge argument sets a shorter tick cap for curriculum runs;
+set `max_decisions` to eight times that cap.
