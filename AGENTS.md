@@ -1,5 +1,30 @@
 # Working in this repo
 
+## Disposable QA Storage
+
+Default disposable QA logs, audits, screenshots and frame dumps to a unique,
+application-specific run directory under OS temporary storage. Use Python
+`tempfile.gettempdir()`/`mkdtemp()`, Nim `getTempDir()`, or shell `mktemp`
+with `TMPDIR`; honor explicit output paths and report the actual directory.
+Bound diagnostic runs by duration/count and use supported size limits. Check
+free space before large captures: temporary storage may share the same disk
+and is not guaranteed to clear on reboot.
+
+Keep intentionally retained evidence, saves, assets, model checkpoints,
+research inputs/outputs and required live IPC/status/leases/databases in their
+existing locations. Do not silently move existing files, change output schemas,
+or treat build products as disposable diagnostics. This policy does not apply
+to vendored/third-party code, Metta, Fabric, Fabric Research or Polyworld.
+Never delete, truncate, prune, vacuum, rotate, rewrite or relocate Codex/Claude
+sessions, prompt histories, traces, recovery exports, indexes or databases.
+This guidance authorizes neither global temporary cleanup nor a cleanup timer;
+removing old QA output requires separate authorization and fresh ownership checks.
+
+Reuse the per-run `nmmo-smoke.*` temporary directories in
+`tools/ci/docker_smoke.sh` for disposable smoke output. Keep `build/`,
+`viewer/dist/`, certified bundles and intentional replay exports in their
+contracted locations; leave `vendor/upstream/` byte-pristine.
+
 Conventions for agents (and humans) making changes here. The design and
 implementation history live in `docs/plans/`; the porting recipe this repo
 followed is maintained in the cogame-moba repo
