@@ -14,7 +14,7 @@ Keep intentionally retained evidence, saves, assets, model checkpoints,
 research inputs/outputs and required live IPC/status/leases/databases in their
 existing locations. Do not silently move existing files, change output schemas,
 or treat build products as disposable diagnostics. This policy does not apply
-to vendored/third-party code, Metta, Fabric, Fabric Research or Polyworld.
+to vendored/third-party code or other repositories.
 Never delete, truncate, prune, vacuum, rotate, rewrite or relocate Codex/Claude
 sessions, prompt histories, traces, recovery exports, indexes or databases.
 This guidance authorizes neither global temporary cleanup nor a cleanup timer;
